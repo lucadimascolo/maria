@@ -171,10 +171,13 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             mask = np.zeros(n_dets, dtype=bool)
             mask[rank_indices] = True
             self.instrument = self.instrument._subset(mask)
+            self.instrument._global_det_indices = rank_indices
             logger.info(
                 f"MPI rank {self._mpi_rank}/{self._mpi_size}: "
                 f"assigned {len(rank_indices)} of {n_dets} detectors (interleaved)"
             )
+        else:
+            self.instrument._global_det_indices = np.arange(len(self.instrument.dets))
 
         self.obs_list = []
         for obs_index, plan in enumerate(self.plans):
@@ -279,9 +282,14 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             self._simulate_noise(obs)
             logger.debug(f"Ran noise simulation in {humanize_time(ttime.monotonic() - noise_sim_start_s)}.")
 
-        gain_error = np.exp(
-            obs.instrument.dets.gain_error * np.random.standard_normal(size=obs.instrument.dets.n),
-        )
+        if self._seed is not None:
+            gain_values = np.array([
+                np.random.default_rng([self._seed + 1, int(g)]).standard_normal()
+                for g in obs.instrument._global_det_indices
+            ])
+        else:
+            gain_values = np.random.standard_normal(size=obs.instrument.dets.n)
+        gain_error = np.exp(obs.instrument.dets.gain_error * gain_values)
 
         for field in obs.loading:
             if field in ["noise"]:
