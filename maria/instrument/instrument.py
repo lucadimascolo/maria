@@ -170,6 +170,16 @@ class Instrument:
     def dets(self):
         return self.arrays.combine()
 
+    def _subset(self, mask):
+        """Return a new Instrument with only the detectors where mask is True."""
+        subset_array = self.dets._subset(mask)
+        return Instrument(
+            arrays=[subset_array],
+            description=self.description,
+            az_vel_limit=self.az_vel_limit,
+            acc_limit=self.acc_limit,
+        )
+
     @property
     def bands(self):
         return self.arrays.bands

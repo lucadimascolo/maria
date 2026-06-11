@@ -41,7 +41,22 @@ class BinMapper(BaseProjectionMapper):
         map_postprocessing: dict = {},
         progress_bars: bool = True,
         bilinear: bool = False,
+        mpi: bool = False,
     ):
+        # Set up MPI before super().__init__ so the comm is available for the
+        # nu-grid synchronization that must happen before map arrays are sized.
+        self._mpi = mpi
+        self._mpi_comm = None
+        self._mpi_SUM = None
+        if mpi:
+            try:
+                from mpi4py import MPI as _MPI
+
+                self._mpi_comm = _MPI.COMM_WORLD
+                self._mpi_SUM = _MPI.SUM
+            except ImportError as e:
+                raise ImportError("mpi4py is required for MPI support: pip install mpi4py") from e
+
         super().__init__(
             tods=tods,
             target=target,
@@ -61,6 +76,24 @@ class BinMapper(BaseProjectionMapper):
             progress_bars=progress_bars,
             bilinear=bilinear,
         )
+
+        # After add_tods() populates self.nu, synchronize
+        # the frequency grid across all ranks.
+        if mpi and self._mpi_comm is not None:
+            all_nu_hz = self._mpi_comm.allgather(list(self.nu.Hz))
+            combined_hz = sorted({v for row in all_nu_hz for v in row})
+            if list(self.nu.Hz) != combined_hz:
+                self.nu = Quantity(combined_hz, "Hz")
+                beam_sum = np.zeros((len(self.nu), 1, 3))
+                beam_wgt = np.zeros((len(self.nu), 1, 3))
+                for nu_index, nu in enumerate(self.nu):
+                    for tod in self.tods:
+                        mask = tod.dets.band_center == nu.Hz
+                        if mask.sum() > 0:
+                            beam_sum[nu_index] += tod.duration * tod.dets.beams[mask].mean(axis=0)
+                            beam_wgt[nu_index] += tod.duration
+                with np.errstate(invalid="ignore"):
+                    self.beam = np.where(beam_wgt > 0, beam_sum / beam_wgt, 0.0)
 
         self.products = {
             "data": np.zeros(self.map_shape),
@@ -108,6 +141,14 @@ class BinMapper(BaseProjectionMapper):
 
             map_sum += (W * D) @ P
             map_wgt += W @ np.abs(P)
+
+        if self._mpi:
+            total_sum = np.zeros_like(map_sum)
+            total_wgt = np.zeros_like(map_wgt)
+            self._mpi_comm.Allreduce(map_sum, total_sum, op=self._mpi_SUM)
+            self._mpi_comm.Allreduce(map_wgt, total_wgt, op=self._mpi_SUM)
+            map_sum = total_sum
+            map_wgt = total_wgt
 
         self.products = {
             "data": map_sum / map_wgt,

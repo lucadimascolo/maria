@@ -89,6 +89,8 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         progress_bars: bool = True,
         keep_mean_signal: bool = False,
         dtype: type = np.float32,
+        seed: int = None,
+        mpi: bool = False,
     ):
         self.atmosphere = atmosphere
         self.atmosphere_kwargs = DEFAULT_ATMOSPHERE_SIM_KWARGS.copy()
@@ -101,6 +103,25 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
 
         self.dtype = dtype
         self.disable_progress_bars = (not progress_bars) or (logging.getLevelName(logger.level) == "DEBUG")
+
+        self._seed = seed
+        if seed is not None:
+            np.random.seed(seed)
+
+        self._mpi = mpi
+        self._mpi_comm = None
+        self._mpi_rank = 0
+        self._mpi_size = 1
+        if mpi:
+            try:
+                from mpi4py import MPI
+
+                self._mpi_comm = MPI.COMM_WORLD
+                self._mpi_rank = self._mpi_comm.Get_rank()
+                self._mpi_size = self._mpi_comm.Get_size()
+                self.disable_progress_bars = self.disable_progress_bars or (self._mpi_rank != 0)
+            except ImportError as e:
+                raise ImportError("mpi4py is required for MPI support: pip install mpi4py") from e
 
         instrument_init_s = ttime.monotonic()
 
@@ -138,6 +159,22 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         self.plans = PlanList(plans)
 
         logger.debug(f"Initialized plans in {humanize_time(ttime.monotonic() - plan_init_s)}.")
+
+        if self._mpi and self._mpi_size > 1:
+            n_dets = len(self.instrument.dets)
+            all_indices = np.arange(n_dets)
+            # Interleaved (stride) assignment ensures every rank gets a
+            # proportional mix of all frequency bands even when detectors are
+            # band-ordered. Contiguous blocks would give each rank only a
+            # single band, causing unequal nu grids and atmosphere hull sizes.
+            rank_indices = all_indices[self._mpi_rank :: self._mpi_size]
+            mask = np.zeros(n_dets, dtype=bool)
+            mask[rank_indices] = True
+            self.instrument = self.instrument._subset(mask)
+            logger.info(
+                f"MPI rank {self._mpi_rank}/{self._mpi_size}: "
+                f"assigned {len(rank_indices)} of {n_dets} detectors (interleaved)"
+            )
 
         self.obs_list = []
         for obs_index, plan in enumerate(self.plans):
@@ -199,6 +236,12 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         # logger.debug(f"Initialized simulation in {humanize_time(ttime.monotonic() - sim_start_s)}.")
 
     def run(self, units: str = "K_RJ"):
+        # Reseed here so that the atmosphere AR process always starts from the
+        # same PRNG state on every rank, regardless of how many random values
+        # were consumed during __init__ (which varies with n_dets per rank).
+        if self._seed is not None:
+            np.random.seed(self._seed)
+
         tods = []
         for obs_index, obs in enumerate(self.obs_list):
             logger.info(f"Simulating observation {obs_index + 1} of {len(self.obs_list)}")
