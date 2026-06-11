@@ -47,17 +47,16 @@ def generate_noise_with_knee(
 
         _jax_seed = band_seed if band_seed is not None else seed
         if det_seeds is not None:
-            # Per-detector JAX keys: derive int seed from [master+2, global_idx] namespace
-            jax_rows = [
-                jax.random.normal(
-                    key=jax.random.key(
-                        int(np.random.default_rng([s[0] + 2, s[1]]).integers(0, 2**31))
-                    ),
-                    shape=(shape[-1],),
-                )
+            # Derive one int key per detector ([seed+2, g] namespace), then
+            # dispatch a single batched JAX call via vmap instead of N calls.
+            key_ints = np.array([
+                int(np.random.default_rng([s[0] + 2, s[1]]).integers(0, 2**31))
                 for s in det_seeds
-            ]
-            jax_noise = np.vstack(jax_rows)
+            ], dtype=np.uint32)
+            jax_keys = jax.vmap(jax.random.key)(jax.numpy.array(key_ints))
+            jax_noise = np.asarray(
+                jax.vmap(lambda k: jax.random.normal(k, shape=(shape[-1],)))(jax_keys)
+            )
         else:
             jax_noise = jax.random.normal(key=jax.random.key(_jax_seed), shape=shape)
 

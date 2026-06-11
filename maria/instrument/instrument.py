@@ -138,6 +138,7 @@ class Instrument:
         self.documentation = documentation
         self.az_vel_limit = az_vel_limit
         self.acc_limit = acc_limit
+        self._global_det_indices = np.arange(len(self.dets))
 
         # self.primary_size = float(self.dets.primary_size.max())
         # self.field_of_view = np.round(np.degrees(lazy_diameter(self.dets.offsets)), 3)
@@ -173,12 +174,14 @@ class Instrument:
     def _subset(self, mask):
         """Return a new Instrument with only the detectors where mask is True."""
         subset_array = self.dets._subset(mask)
-        return Instrument(
+        new = Instrument(
             arrays=[subset_array],
             description=self.description,
             az_vel_limit=self.az_vel_limit,
             acc_limit=self.acc_limit,
         )
+        new._global_det_indices = self._global_det_indices[mask]
+        return new
 
     @property
     def bands(self):
