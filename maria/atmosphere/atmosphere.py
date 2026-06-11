@@ -181,8 +181,9 @@ class Atmosphere:
                 process_points_for_hull_list,
                 axis=0,
             ).reshape(-1, 3)
-            process_points_for_hull[..., 2] += 1e-6 * np.random.standard_normal(
-                process_points_for_hull[..., 2].shape,
+            _n = process_points_for_hull[..., 2].size
+            process_points_for_hull[..., 2] += 1e-6 * np.sin(
+                np.pi * np.arange(_n).reshape(process_points_for_hull[..., 2].shape) / max(_n, 1)
             )
             # process_points_for_hull = process_points_for_hull.reshape(-1, 3)
 

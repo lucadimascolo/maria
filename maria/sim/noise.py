@@ -49,12 +49,22 @@ class NoiseMixin:
             else:
                 basis = np.ones((band_mask.sum(), 1))
 
+            global_indices = obs.instrument._global_det_indices[band_mask]
+            if self._seed is not None:
+                det_seeds = [[self._seed, int(g)] for g in global_indices]
+                band_seed = int((self._seed * 2654435761 + int(band.center.Hz)) % (2**31))
+            else:
+                det_seeds = None
+                band_seed = None
+
             unscaled_noise = generate_noise_with_knee(
                 shape=(band_mask.sum(), obs.plan.n),
                 sample_rate=obs.plan.sample_rate.Hz,
                 knee=band.knee,
                 basis=basis,
                 corr_prop=self.noise_kwargs.get("correlated_noise_proportion", 0),
+                det_seeds=det_seeds,
+                band_seed=band_seed,
             )
 
             # put her in picowatts

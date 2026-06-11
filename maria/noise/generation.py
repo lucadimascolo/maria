@@ -16,12 +16,25 @@ def generate_noise_with_knee(
     basis: float = None,
     corr_prop: float = 0.0,
     seed: int = 12345,
+    det_seeds=None,
+    band_seed=None,
 ):
     """
     Simulate white noise for a given time and NEP.
+
+    When det_seeds is provided (list of [master_seed, global_det_idx] pairs),
+    each detector draws from an independent RNG keyed by its global index so
+    that serial and MPI runs with the same seed produce identical noise.
+    band_seed pins the band-level draws (JAX pink noise, correlated modes).
     """
 
-    noise = np.sqrt(sample_rate) * np.random.standard_normal(shape)
+    if det_seeds is not None:
+        noise = np.sqrt(sample_rate) * np.vstack([
+            np.random.default_rng(s).standard_normal(shape[-1])
+            for s in det_seeds
+        ])
+    else:
+        noise = np.sqrt(sample_rate) * np.random.standard_normal(shape)
 
     # pink noise
     if knee > 0:
@@ -31,17 +44,31 @@ def generate_noise_with_knee(
             pink_noise_power_spectrum = np.where(f != 0, a / (np.abs(f) ** beta), 0)
 
         weights = np.sqrt(2 * sample_rate * pink_noise_power_spectrum)
-        pink_noise = np.real(
-            np.fft.ifft(
-                weights * np.fft.fft(jax.random.normal(key=jax.random.key(seed), shape=shape)),
-            ),
-        )
+
+        _jax_seed = band_seed if band_seed is not None else seed
+        if det_seeds is not None:
+            # Per-detector JAX keys: derive int seed from [master+2, global_idx] namespace
+            jax_rows = [
+                jax.random.normal(
+                    key=jax.random.key(
+                        int(np.random.default_rng([s[0] + 2, s[1]]).integers(0, 2**31))
+                    ),
+                    shape=(shape[-1],),
+                )
+                for s in det_seeds
+            ]
+            jax_noise = np.vstack(jax_rows)
+        else:
+            jax_noise = jax.random.normal(key=jax.random.key(_jax_seed), shape=shape)
+
+        pink_noise = np.real(np.fft.ifft(weights * np.fft.fft(jax_noise)))
 
         if basis is not None:
             noise_modes = generate_noise_with_knee(
                 shape=(basis.shape[-1], shape[-1]),
                 sample_rate=sample_rate,
                 knee=knee,
+                seed=_jax_seed,
             )
 
             pink_noise = np.sqrt(corr_prop) * basis @ noise_modes + np.sqrt(1 - corr_prop) * pink_noise
