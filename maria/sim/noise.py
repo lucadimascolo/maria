@@ -51,7 +51,10 @@ class NoiseMixin:
 
             global_indices = obs.instrument._global_det_indices[band_mask]
             if self._seed is not None:
+                # Seed namespace: [seed, g] for white noise, [seed+1, g] for gain,
+                # [seed+2, g] for pink noise (see generation.py and simulation.py).
                 det_seeds = [[self._seed, int(g)] for g in global_indices]
+                # Knuth multiplicative hash mixes seed with band frequency → unique int per band.
                 band_seed = int((self._seed * 2654435761 + int(band.center.Hz)) % (2**31))
             else:
                 det_seeds = None

@@ -171,13 +171,10 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             mask = np.zeros(n_dets, dtype=bool)
             mask[rank_indices] = True
             self.instrument = self.instrument._subset(mask)
-            self.instrument._global_det_indices = rank_indices
             logger.info(
                 f"MPI rank {self._mpi_rank}/{self._mpi_size}: "
                 f"assigned {len(rank_indices)} of {n_dets} detectors (interleaved)"
             )
-        else:
-            self.instrument._global_det_indices = np.arange(len(self.instrument.dets))
 
         self.obs_list = []
         for obs_index, plan in enumerate(self.plans):
