@@ -358,9 +358,114 @@ class TOD:
 
             hdu.writeto(fname, overwrite=overwrite)
 
-    # def to_hdf(self, fname):
-    #     with h5py.File(fname, "w") as f:
-    #         f.create_dataset(fname)
+    def save(self, path: str) -> None:
+        """Save TOD to an HDF5 file."""
+        from astropy.coordinates import EarthLocation
+
+        with h5py.File(path, "w") as f:
+            data_grp = f.create_group("data")
+            for field, arr in self.data.items():
+                val = arr.compute() if hasattr(arr, "compute") else np.asarray(arr)
+                data_grp.create_dataset(field, data=val, compression="gzip")
+
+            w = self.weight.compute() if hasattr(self.weight, "compute") else np.asarray(self.weight)
+            f.create_dataset("weight", data=w, compression="gzip")
+
+            coords_grp = f.create_group("coords")
+            coords_grp.create_dataset("ra", data=self.coords.ra, compression="gzip")
+            coords_grp.create_dataset("dec", data=self.coords.dec, compression="gzip")
+            coords_grp.create_dataset("t", data=self.coords.t)
+            coords_grp.attrs["lat"] = float(self.coords.earth_location.lat.deg)
+            coords_grp.attrs["lon"] = float(self.coords.earth_location.lon.deg)
+            coords_grp.attrs["height"] = float(self.coords.earth_location.height.to("m").value)
+
+            dets_grp = f.create_group("dets")
+            dets_grp.attrs["name"] = str(self.dets.name)
+            str_dtype = h5py.string_dtype()
+            for col in self.dets.dets.columns:
+                series = self.dets.dets[col]
+                if pd.api.types.is_numeric_dtype(series):
+                    dets_grp.create_dataset(col, data=series.values.astype(float))
+                else:
+                    dets_grp.create_dataset(col, data=series.astype(str).values.astype(str), dtype=str_dtype)
+
+            bands_grp = f.create_group("bands")
+            for band in self.dets.bands:
+                safe_name = band.name.replace("/", "__")
+                bg = bands_grp.create_group(safe_name)
+                bg.attrs["name"] = band.name
+                bg.create_dataset("nu", data=band.nu.Hz)
+                bg.create_dataset("tau", data=band.tau)
+                bg.attrs["efficiency"] = float(band.efficiency)
+                bg.attrs["NEP"] = float(band.NEP.to("W√s"))
+                bg.attrs["NEP_per_loading"] = float(band.NEP_per_loading.to("W√s"))
+                bg.attrs["knee"] = float(band.knee)
+                bg.attrs["time_constant"] = float(band.time_constant)
+                bg.attrs["gain_error"] = float(band.gain_error)
+
+            f.attrs["units"] = self.units
+            safe_meta = {}
+            for k, v in self.metadata.items():
+                if isinstance(v, (int, float, str, bool)):
+                    safe_meta[k] = v
+                elif hasattr(v, "isoformat"):
+                    safe_meta[k] = str(v)
+            f.attrs["metadata"] = json.dumps(safe_meta)
+
+    @classmethod
+    def load(cls, path: str) -> "TOD":
+        """Load TOD from an HDF5 file produced by :meth:`save`."""
+        from astropy.coordinates import EarthLocation
+
+        from ..array import Array
+        from ..band import Band, BandList
+
+        with h5py.File(path, "r") as f:
+            data = {field: f["data"][field][:] for field in f["data"]}
+            weight = f["weight"][:]
+
+            ra = f["coords"]["ra"][:]
+            dec = f["coords"]["dec"][:]
+            t = f["coords"]["t"][:]
+            earth_location = EarthLocation.from_geodetic(
+                lon=f["coords"].attrs["lon"],
+                lat=f["coords"].attrs["lat"],
+                height=f["coords"].attrs["height"],
+            )
+            coords = Coordinates(t=t, phi=ra, theta=dec, earth_location=earth_location, frame="ra/dec")
+
+            name = f["dets"].attrs["name"]
+            dets_dict = {}
+            for col in f["dets"]:
+                vals = f["dets"][col][:]
+                if vals.dtype.kind in ("S", "O") or h5py.check_string_dtype(f["dets"][col].dtype):
+                    vals = vals.astype(str)
+                dets_dict[col] = vals
+            dets_df = pd.DataFrame(dets_dict)
+
+            bands = []
+            for safe_name in f["bands"]:
+                bg = f["bands"][safe_name]
+                band_name = bg.attrs.get("name", safe_name.replace("__", "/"))
+                bands.append(
+                    Band(
+                        name=band_name,
+                        nu=bg["nu"][:],
+                        tau=bg["tau"][:],
+                        efficiency=float(bg.attrs["efficiency"]),
+                        NEP=float(bg.attrs["NEP"]),
+                        NEP_per_loading=float(bg.attrs["NEP_per_loading"]),
+                        knee=float(bg.attrs["knee"]),
+                        time_constant=float(bg.attrs["time_constant"]),
+                        gain_error=float(bg.attrs["gain_error"]),
+                    )
+                )
+            dets = Array(name=name, dets=dets_df, bands=BandList(bands))
+
+            units = f.attrs["units"]
+            metadata = json.loads(f.attrs["metadata"])
+
+        return cls(data=data, weight=weight, coords=coords, dets=dets, units=units, metadata=metadata)
 
     @staticmethod
     def from_fits(fname: str, format: str, **kwargs):
