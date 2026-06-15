@@ -131,11 +131,8 @@ class BaseMapper:
         raise NotImplementedError()
 
     def add_tods(self, tods):
-        tods_pbar = tqdm(
-            np.atleast_1d(tods), desc="Preprocessing TODs", bar_format=DEFAULT_BAR_FORMAT, disable=not self.progress_bars
-        )
-        for tod in tods_pbar:
-            self.tods.append(tod.process(config=self.tod_preprocessing).to(self.tod_units))
+        for tod in np.atleast_1d(tods):
+            self.tods.append(tod)
 
         nu_Hz = []
         for tod in self.tods:

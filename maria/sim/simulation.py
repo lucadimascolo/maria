@@ -90,7 +90,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         keep_mean_signal: bool = False,
         dtype: type = np.float32,
         seed: int = None,
-        mpi: bool = False,
+        n_chunks: int = None,
     ):
         self.atmosphere = atmosphere
         self.atmosphere_kwargs = DEFAULT_ATMOSPHERE_SIM_KWARGS.copy()
@@ -102,26 +102,30 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         self.noise_kwargs = noise_kwargs
 
         self.dtype = dtype
-        self.disable_progress_bars = (not progress_bars) or (logging.getLevelName(logger.level) == "DEBUG")
 
         self._seed = seed
         if seed is not None:
             np.random.seed(seed)
 
-        self._mpi = mpi
         self._mpi_comm = None
         self._mpi_rank = 0
         self._mpi_size = 1
-        if mpi:
-            try:
-                from mpi4py import MPI
+        try:
+            from mpi4py import MPI
 
-                self._mpi_comm = MPI.COMM_WORLD
-                self._mpi_rank = self._mpi_comm.Get_rank()
-                self._mpi_size = self._mpi_comm.Get_size()
-                self.disable_progress_bars = self.disable_progress_bars or (self._mpi_rank != 0)
-            except ImportError as e:
-                raise ImportError("mpi4py is required for MPI support: pip install mpi4py") from e
+            self._mpi_comm = MPI.COMM_WORLD
+            self._mpi_rank = self._mpi_comm.Get_rank()
+            self._mpi_size = self._mpi_comm.Get_size()
+        except ImportError:
+            pass
+
+        self._mpi = self._mpi_size > 1
+        self._n_chunks = n_chunks or 1
+        self.disable_progress_bars = (
+            (not progress_bars)
+            or (logging.getLevelName(logger.level) == "DEBUG")
+            or (self._mpi_rank != 0)
+        )
 
         instrument_init_s = ttime.monotonic()
 
@@ -160,7 +164,9 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
 
         logger.debug(f"Initialized plans in {humanize_time(ttime.monotonic() - plan_init_s)}.")
 
-        if self._mpi and self._mpi_size > 1:
+        self._base_instrument = self.instrument
+
+        if self._mpi:
             n_dets = len(self.instrument.dets)
             all_indices = np.arange(n_dets)
             # Interleaved (stride) assignment ensures every rank gets a
@@ -175,30 +181,6 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
                 f"MPI rank {self._mpi_rank}/{self._mpi_size}: "
                 f"assigned {len(rank_indices)} of {n_dets} detectors (interleaved)"
             )
-
-        self.obs_list = []
-        for obs_index, plan in enumerate(self.plans):
-            logger.debug(f"Initializing Observation {obs_index + 1} of {len(self.plans)}")
-
-            obs_start_s = ttime.monotonic()
-
-            obs = Observation(
-                instrument=self.instrument,
-                plan=plan,
-                site=self.site,
-                atmosphere=self.atmosphere,
-                atmosphere_kwargs=self.atmosphere_kwargs,
-            )
-
-            if hasattr(obs, "atmosphere"):
-                obs.atmosphere.initialize(obs)
-
-            cmb_start_s = ttime.monotonic()
-
-            self.obs_list.append(obs)
-
-            duration_s = ttime.monotonic() - obs_start_s
-            logger.debug(f"Initialized Observation in {humanize_time(duration_s)}.")
 
         if cmb:
             cmb_start_s = ttime.monotonic()
@@ -235,23 +217,102 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
 
         # logger.debug(f"Initialized simulation in {humanize_time(ttime.monotonic() - sim_start_s)}.")
 
-    def run(self, units: str = "K_RJ"):
+    def _build_obs_list(self, instrument):
+        obs_list = []
+        for obs_index, plan in enumerate(self.plans):
+            logger.debug(f"Initializing Observation {obs_index + 1} of {len(self.plans)}")
+            obs_start_s = ttime.monotonic()
+            obs = Observation(
+                instrument=instrument,
+                plan=plan,
+                site=self.site,
+                atmosphere=self.atmosphere,
+                atmosphere_kwargs=self.atmosphere_kwargs,
+            )
+            if hasattr(obs, "atmosphere"):
+                obs.atmosphere.initialize(obs, reference_instrument=self._base_instrument)
+            obs_list.append(obs)
+            logger.debug(f"Initialized Observation in {humanize_time(ttime.monotonic() - obs_start_s)}.")
+        return obs_list
+
+    def _build_obs_list_from_reference(self, ref_obs_list, instrument):
+        """Build obs list reusing already-initialized atmosphere from ref_obs_list.
+
+        The atmosphere spatial field (AR process, covariance matrices, GP grid) is
+        identical for every chunk, so we only construct it once. Here we reuse that
+        field and update only the per-detector sampling coordinates.
+        """
+        obs_list = []
+        for ref_obs in ref_obs_list:
+            obs = Observation(
+                instrument=instrument,
+                plan=ref_obs.plan,
+                site=self.site,
+                atmosphere=None,
+                atmosphere_kwargs=self.atmosphere_kwargs,
+            )
+            if hasattr(ref_obs, "atmosphere"):
+                obs.atmosphere = ref_obs.atmosphere
+                obs.atmosphere.coords = ref_obs.atmosphere.boresight.broadcast(
+                    instrument.dets.offsets,
+                    frame="az/el",
+                )
+            obs_list.append(obs)
+        return obs_list
+
+    def run(self, units: str = "K_RJ", save_dir: str = None):
         # Reseed here so that the atmosphere AR process always starts from the
         # same PRNG state on every rank, regardless of how many random values
         # were consumed during __init__ (which varies with n_dets per rank).
         if self._seed is not None:
             np.random.seed(self._seed)
 
-        tods = []
-        for obs_index, obs in enumerate(self.obs_list):
-            logger.info(f"Simulating observation {obs_index + 1} of {len(self.obs_list)}")
-            obs_start_s = ttime.monotonic()
-            tods.append(self.run_obs(obs).to(units))
-            logger.info(
-                f"Simulated observation {obs_index + 1} of {len(self.obs_list)} "
-                f"in {humanize_time(ttime.monotonic() - obs_start_s)}"
-            )
-        return tods
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
+        n_dets = len(self.instrument.dets)
+        all_indices = np.arange(n_dets)
+        all_tods, saved_paths = [], []
+        ref_obs_list = None
+
+        for chunk_idx in range(self._n_chunks):
+            if self._n_chunks > 1:
+                mask = np.zeros(n_dets, dtype=bool)
+                mask[all_indices[chunk_idx :: self._n_chunks]] = True
+                chunk_instrument = self.instrument._subset(mask)
+                logger.info(
+                    f"Chunk {chunk_idx + 1}/{self._n_chunks}: "
+                    f"{mask.sum()} of {n_dets} detectors (interleaved)"
+                )
+                if self._seed is not None:
+                    np.random.seed(self._seed)
+            else:
+                chunk_instrument = self.instrument
+
+            if ref_obs_list is None:
+                obs_list = self._build_obs_list(chunk_instrument)
+                ref_obs_list = obs_list
+            else:
+                obs_list = self._build_obs_list_from_reference(ref_obs_list, chunk_instrument)
+
+            for obs_index, obs in enumerate(obs_list):
+                logger.info(f"Simulating observation {obs_index + 1} of {len(obs_list)}")
+                obs_start_s = ttime.monotonic()
+                tod = self.run_obs(obs).to(units)
+                logger.info(
+                    f"Simulated observation {obs_index + 1} of {len(obs_list)} "
+                    f"in {humanize_time(ttime.monotonic() - obs_start_s)}"
+                )
+                if save_dir:
+                    obs_suffix = f"_obs{obs_index:03d}" if len(self.plans) > 1 else ""
+                    path = os.path.join(save_dir, f"tod_rank-{self._mpi_rank}_chunk-{chunk_idx}{obs_suffix}.h5")
+                    tod.save(path)
+                    saved_paths.append(path)
+                    logger.info(f"Saved → {path}")
+                else:
+                    all_tods.append(tod)
+
+        return saved_paths if save_dir else all_tods
 
     def run_obs(self, obs: Observation) -> TOD:
         obs.loading = {}
@@ -327,10 +388,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         site_tree = "├ " + self.site.__repr__().replace("\n", "\n│ ")
         plan_tree = "├ " + self.plans.__repr__().replace("\n", "\n│ ")
 
-        if self.atmosphere:
-            atmosphere_tree = "├ " + self.obs_list[0].atmosphere.__repr__().replace("\n", "\n│ ")
-        else:
-            atmosphere_tree = ""
+        atmosphere_tree = f"├ atmosphere: {self.atmosphere}" if self.atmosphere else ""
 
         trees = []
         attrs = [attr for attr in ["cmb", "map"] if getattr(self, attr, None)]
@@ -354,8 +412,8 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
 
     @property
     def min_time(self):
-        return self.obs_list[0].plan.start_time
+        return self.plans[0].start_time
 
     @property
     def max_time(self):
-        return self.obs_list[-1].plan.end_time
+        return self.plans[-1].end_time
