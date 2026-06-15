@@ -78,13 +78,20 @@ class Atmosphere:
 
         self._initialized = False
 
-    def initialize(self, obs):
+    def initialize(self, obs, reference_instrument=None):
         """
         Simulate a realization of PWV.
+
+        reference_instrument, if provided, is used for all atmosphere field
+        construction (layer properties, timestep, outer hull). This ensures the
+        spatial GP field is identical regardless of how detectors are split across
+        MPI ranks or sequential chunks. obs.instrument is used only for self.coords
+        (the per-detector sampling positions).
         """
+        ref = reference_instrument or obs.instrument
 
         self.layers = generate_layers(
-            instrument=obs.instrument,
+            instrument=ref,
             boresight=obs.boresight,
             weather=self.weather,
             site=obs.site,
@@ -94,7 +101,7 @@ class Atmosphere:
         )
 
         if self.timestep is None:
-            min_fwhm = obs.instrument.dets.angular_fwhm(z=self.max_height).min()
+            min_fwhm = ref.dets.angular_fwhm(z=self.max_height).min()
             max_wind = Quantity((self.layers.wind_speed / self.layers.h).values, "rad/s").max()
             self.timestep = max(1e-1, (min_fwhm / max_wind).s)
 
@@ -106,7 +113,7 @@ class Atmosphere:
 
         # this is a smaller version of the sim coords
         outer_coords = self.boresight.broadcast(
-            obs.instrument.dets.outer().offsets,
+            ref.dets.outer().offsets,
             frame="az/el",
         )
 

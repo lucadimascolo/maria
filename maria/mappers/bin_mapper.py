@@ -41,21 +41,24 @@ class BinMapper(BaseProjectionMapper):
         map_postprocessing: dict = {},
         progress_bars: bool = True,
         bilinear: bool = False,
-        mpi: bool = False,
     ):
-        # Set up MPI before super().__init__ so the comm is available for the
-        # nu-grid synchronization that must happen before map arrays are sized.
-        self._mpi = mpi
+        # Auto-detect MPI before super().__init__ so the comm is available for
+        # the nu-grid synchronization that must happen before map arrays are sized.
         self._mpi_comm = None
+        self._mpi_rank = 0
+        self._mpi_size = 1
         self._mpi_SUM = None
-        if mpi:
-            try:
-                from mpi4py import MPI as _MPI
+        try:
+            from mpi4py import MPI as _MPI
 
-                self._mpi_comm = _MPI.COMM_WORLD
-                self._mpi_SUM = _MPI.SUM
-            except ImportError as e:
-                raise ImportError("mpi4py is required for MPI support: pip install mpi4py") from e
+            self._mpi_comm = _MPI.COMM_WORLD
+            self._mpi_rank = self._mpi_comm.Get_rank()
+            self._mpi_size = self._mpi_comm.Get_size()
+            self._mpi_SUM = _MPI.SUM
+        except ImportError:
+            pass
+
+        self._mpi = self._mpi_size > 1
 
         super().__init__(
             tods=tods,
@@ -77,9 +80,13 @@ class BinMapper(BaseProjectionMapper):
             bilinear=bilinear,
         )
 
-        # After add_tods() populates self.nu, synchronize
-        # the frequency grid across all ranks.
-        if mpi and self._mpi_comm is not None:
+        self.progress_bars = self.progress_bars and (self._mpi_rank == 0)
+
+        # After add_tods() populates self.nu, synchronize the frequency grid
+        # and map geometry across all ranks. Different ranks may hold different
+        # detector subsets whose inferred extents and frequency coverage differ
+        # slightly; mismatches cause AllReduce buffer-size crashes.
+        if self._mpi:
             all_nu_hz = self._mpi_comm.allgather(list(self.nu.Hz))
             combined_hz = sorted({v for row in all_nu_hz for v in row})
             if list(self.nu.Hz) != combined_hz:
@@ -95,10 +102,25 @@ class BinMapper(BaseProjectionMapper):
                 with np.errstate(invalid="ignore"):
                     self.beam = np.where(beam_wgt > 0, beam_sum / beam_wgt, 0.0)
 
+            # Synchronize map geometry: broadcast rank-0's center and take the
+            # max width/height so every rank allocates the same pixel grid.
+            local_geom = np.array([
+                float(self.center[0].rad),
+                float(self.center[1].rad),
+                float(self.width.rad),
+                float(self.height.rad),
+            ])
+            all_geom = np.array(self._mpi_comm.allgather(local_geom))
+            self.center = Quantity(all_geom[0, :2], "rad")
+            self.width  = Quantity(float(all_geom[:, 2].max()), "rad")
+            self.height = Quantity(float(all_geom[:, 3].max()), "rad")
+
         self.products = {
             "data": np.zeros(self.map_shape),
             "weight": np.ones(self.map_shape),
         }
+        self._map_sum = np.zeros(self.map_size)
+        self._map_wgt = np.zeros(self.map_size)
 
         self.has_been_ran = False
 
@@ -114,48 +136,44 @@ class BinMapper(BaseProjectionMapper):
     def get_map_weight(self):
         return self.products["weight"]
 
+    def accumulate(self, tod):
+        """Preprocess one TOD, accumulate into the map, then discard the processed copy."""
+        processed = tod.process(config=self.tod_preprocessing).to(self.tod_units)
+        if not processed.shape[0] > 0:
+            return
+        P = super().map.stokes_weighted_pointing_matrix(coords=processed.coords, dets=processed.dets, bilinear=self.bilinear)
+        D = processed.signal.compute().ravel()
+        W = processed.weight.compute().ravel()
+        self._map_sum += (W * D) @ P
+        self._map_wgt += W @ np.abs(P)
+
+    def finalize(self):
+        """AllReduce (if MPI), divide, and return the output map."""
+        if self._mpi:
+            total_sum = np.zeros_like(self._map_sum)
+            total_wgt = np.zeros_like(self._map_wgt)
+            self._mpi_comm.Allreduce(self._map_sum, total_sum, op=self._mpi_SUM)
+            self._mpi_comm.Allreduce(self._map_wgt, total_wgt, op=self._mpi_SUM)
+            self._map_sum, self._map_wgt = total_sum, total_wgt
+
+        self.products = {
+            "data": self._map_sum / self._map_wgt,
+            "weight": self._map_wgt,
+            "sum": self._map_sum,
+        }
+        self.has_been_ran = True
+        return self.map
+
     def run(self):
-        """
-        Run the BinMapper
-        """
-
-        map_sum = np.zeros(self.map_size)
-        map_wgt = np.zeros(self.map_size)
-
+        """Run the BinMapper over all stored TODs."""
         pbar = tqdm(
             self.tods,
             total=len(self.tods),
-            desc=f"Mapping",
+            desc="Mapping",
             postfix={"tod": f"1/{len(self.tods)}"},
             bar_format=DEFAULT_BAR_FORMAT,
             disable=not self.progress_bars,
         )
-
         for tod in pbar:
-            if not tod.shape[0] > 0:
-                continue
-
-            P = super().map.stokes_weighted_pointing_matrix(coords=tod.coords, dets=tod.dets, bilinear=self.bilinear)
-            D = tod.signal.compute().ravel()
-            W = tod.weight.compute().ravel()
-
-            map_sum += (W * D) @ P
-            map_wgt += W @ np.abs(P)
-
-        if self._mpi:
-            total_sum = np.zeros_like(map_sum)
-            total_wgt = np.zeros_like(map_wgt)
-            self._mpi_comm.Allreduce(map_sum, total_sum, op=self._mpi_SUM)
-            self._mpi_comm.Allreduce(map_wgt, total_wgt, op=self._mpi_SUM)
-            map_sum = total_sum
-            map_wgt = total_wgt
-
-        self.products = {
-            "data": map_sum / map_wgt,
-            "weight": map_wgt,
-            "sum": map_sum,
-        }
-
-        self.has_been_ran = True
-
-        return self.map
+            self.accumulate(tod)
+        return self.finalize()
