@@ -18,7 +18,7 @@ from ..array import Array
 from ..coords import Coordinates, Frame, get_center_phi_theta, offsets_to_phi_theta, phi_theta_to_offsets
 from ..io import FITS_DEFAULT_UNITS, FITS_TYPE_ALIASES, repr_phi_theta
 from ..units import Quantity, parse_units
-from ..utils import compute_pointing_matrix_ingredients, unpack_implicit_slice
+from ..utils import compute_pointing_matrix_ingredients
 from .base import Map
 
 here, this_filename = os.path.split(__file__)
@@ -54,6 +54,7 @@ class ProjectionMap(Map):
         frame: str = "ra/dec",
         degrees: bool = True,
         dtype: type = np.float32,
+        enforce_valid_map_quantity: bool = True,
     ):
         # give it five dimensions
 
@@ -94,6 +95,7 @@ class ProjectionMap(Map):
             frame=frame,
             degrees=degrees,
             dtype=dtype,
+            enforce_valid_map_quantity=enforce_valid_map_quantity,
         )
 
         # from the inputs, construct xi and eta
@@ -128,10 +130,10 @@ class ProjectionMap(Map):
         self.eta = Quantity(eta, "deg" if degrees else "rad")
 
         # apply parity convention
-        parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in self.dims}
-        self.apply_parity(**parity_signature)
+        # parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in self.dims}
+        # self.apply_parity(**parity_signature)
 
-    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = True):
+    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = False):
         offsets = coords.offsets(center=(self.center[0].rad, self.center[1].rad), frame=self.frame.name)
 
         return compute_pointing_matrix_ingredients(
@@ -143,40 +145,6 @@ class ProjectionMap(Map):
             side_list=(self.t.seconds, self.eta.radians, self.xi.radians),
             bilinear=bilinear,
         )
-
-    def _stokes_weighted_pointing_matrix_ingredients(self, coords: Coordinates, dets: Array, bilinear: bool = True):
-
-        M = dets.mueller()
-        samples, pixels, weights, n_pixels, n_samples = self._pointing_matrix_ingredients(coords=coords, bilinear=bilinear)
-
-        if "nu" in self.dims:
-            for nu_index, nu in enumerate(self.nu):
-                pixels[:, dets.band_center == nu.Hz] += nu_index * n_pixels
-            n_pixels *= self.dims["nu"]
-
-        stokes_list = self.stokes if "stokes" in self.dims else "I"
-
-        samples_list, pixels_list, weights_list = [], [], []
-        for stokes_index, stokes in enumerate(stokes_list):
-            samples_list.append(samples)
-            pixels_list.append(pixels + n_pixels * stokes_index)
-            weights_list.append(weights * M[:, 0, "IQUV".index(stokes)][:, None])
-
-        return (
-            np.concatenate(weights_list).ravel(),
-            np.concatenate(samples_list).ravel(),
-            np.concatenate(pixels_list).ravel(),
-            n_samples,
-            len(stokes_list) * n_pixels,
-        )
-
-    def stokes_weighted_pointing_matrix(self, coords: Coordinates, dets: Array, bilinear: bool = True):
-
-        weights, samples, pixels, n_samples, n_pixels = self._stokes_weighted_pointing_matrix_ingredients(
-            coords=coords, dets=dets, bilinear=bilinear
-        )
-
-        return sp.sparse.csr_array((weights, (samples, pixels)), shape=(n_samples, n_pixels))
 
     def header(self):
 
@@ -195,14 +163,14 @@ class ProjectionMap(Map):
         header["BPA"] = averaged_beam[2].degrees.item()
 
         CTYPE1 = self.frame.fits_phi
-        header["CTYPE1"] = f"{CTYPE1}{(5 - len(CTYPE1)) * '-'}SIN"
+        header["CTYPE1"] = f"{CTYPE1}{(5 - len(CTYPE1)) * '-'}TAN"
         header["CRVAL1"] = self.center[0].deg
         header["CRPIX1"] = self.xi.size // 2
         header["CDELT1"] = -self.xi_res.deg  # longitude goes the other way
         header["CUNIT1"] = "deg"
 
         CTYPE2 = self.frame.fits_theta
-        header["CTYPE2"] = f"{CTYPE2}{(5 - len(CTYPE2)) * '-'}SIN"
+        header["CTYPE2"] = f"{CTYPE2}{(5 - len(CTYPE2)) * '-'}TAN"
         header["CRVAL2"] = self.center[1].deg
         header["CRPIX2"] = self.eta.size // 2
         header["CDELT2"] = self.eta_res.deg
@@ -237,33 +205,6 @@ class ProjectionMap(Map):
 
         return header
 
-    def __getitem__(self, key):
-        key = key if isinstance(key, tuple) else (key,)
-
-        explicit_slices = unpack_implicit_slice(key, ndims=self.ndim)
-        package = self.package()
-
-        package["data"] = package["data"][key]
-        if self._weight is not None:
-            package["weight"] = package["weight"][key]
-        package["beam"] = package["beam"][explicit_slices[: -len(self.map_dims)]]
-
-        for axis, (dim, naxis) in enumerate(self.dims.items()):
-            if isinstance(explicit_slices[axis], int):
-                package.pop(dim)
-            else:
-                package[dim] = package[dim][explicit_slices[axis]]
-
-        xi_res_factor = explicit_slices[-1].step or 1.0
-        eta_res_factor = explicit_slices[-2].step or 1.0
-
-        dimensions = parse_units(self.units)["dimension_vector"]
-
-        # downsampling changes the pixel area, so we might have to adjust
-        package["data"] *= (xi_res_factor * eta_res_factor) ** dimensions.pixel
-
-        return ProjectionMap(**package)
-
     # @property
     # def points(self):
     #     return np.stack(np.meshgrid(self.y_side, self.x_side, indexing="ij"), axis=-1)
@@ -286,7 +227,7 @@ class ProjectionMap(Map):
   beam(maj, min, psi): {self.beam_repr()}
   memory: {Quantity(self.data.nbytes + (self._weight.nbytes if self._weight is not None else 0), "B")}"""
 
-    def package(self):
+    def package(self, compute: bool = False):
         package = copy.deepcopy(
             {
                 "data": self.data,
@@ -298,8 +239,13 @@ class ProjectionMap(Map):
             }
         )
 
+        if compute:
+            package["data"] = package["data"].compute()
+
         if self._weight is not None:
             package["weight"] = self._weight
+            if compute:
+                package["weight"] = package["weight"].compute()
 
         for dim in self.dims:
             package[dim] = getattr(self, dim)
@@ -482,13 +428,17 @@ class ProjectionMap(Map):
 
         return type(self)(**package)
 
-    def smooth(self, sigma: float = None, fwhm: float = None):
+    def smooth(self, sigma: float = None, fwhm: float = None, degrees: bool = True):
         if not (sigma is None) ^ (fwhm is None):
             raise ValueError("You must supply exactly one of 'sigma' or 'fwhm'.")
 
+        sigma = sigma if sigma is not None else fwhm / np.sqrt(8 * np.log(2))
+
+        if not isinstance(sigma, Quantity):
+            sigma = Quantity(sigma, "deg" if degrees else "rad")
+
         package = self.package()
 
-        sigma = sigma if sigma is not None else fwhm / np.sqrt(8 * np.log(2))
         x_sigma_pixels = abs(sigma / self.xi_res)
         y_sigma_pixels = abs(sigma / self.eta_res)
 
@@ -565,7 +515,17 @@ class ProjectionMap(Map):
         nu_indices = list(np.atleast_1d(slices["nu"])) if (slices and "nu" in slices) else list(range(n_nu))
 
         rows = [
-            compute_transfer_function(input_map, self, n_bins=n_bins, stokes=stokes, nu_index=i, t_index=t_index, window=window, taper=taper, pad_factor=pad_factor)
+            compute_transfer_function(
+                input_map,
+                self,
+                n_bins=n_bins,
+                stokes=stokes,
+                nu_index=i,
+                t_index=t_index,
+                window=window,
+                taper=taper,
+                pad_factor=pad_factor,
+            )
             for i in nu_indices
         ]
         u = rows[0][0]
@@ -589,6 +549,7 @@ class ProjectionMap(Map):
     def plot(
         self,
         slices: dict = {},
+        attr: str = "data",
         cmap: str = "cmb",
         units: str = None,
         filename: str = None,
@@ -633,8 +594,22 @@ class ProjectionMap(Map):
             units = Quantity(self.data, self.units).human_units
             logger.debug(f"Plotting with units '{units}'")
 
-        map_data = self.to(units).data.compute()
-        u = parse_units(units)
+        plot_map = self.to(units)
+
+        if attr == "data":
+            map_data = plot_map.data
+            map_weight = plot_map.weight
+            map_units_repr = plot_map.u["math_name"]
+
+        elif attr == "weight":
+            map_data = plot_map.weight
+            map_weight = da.ones_like(map_data)
+            map_units_repr = f"({plot_map.u['math_name']})^{{-2}}"
+
+        else:
+            raise ValueError("'attr' must be either 'data' or 'weight'")
+
+        # u = parse_units(units)
 
         grid_hu = Quantity(np.r_[self.xi.rad, self.eta.rad], "rad").hu
 
@@ -677,14 +652,14 @@ class ProjectionMap(Map):
                             raise ValueError(f"Map does not have stokes parameter '{stokes}'")
                         ax_slices["stokes"] = list(self.stokes).index(stokes)
 
-                map_slice_data = map_data[tuple(ax_slices.values())]
-                map_slice_weights = self.weight[tuple(ax_slices.values())].compute()
+                map_slice_data = map_data[tuple(ax_slices.values())].compute()
+                map_slice_weight = map_weight[tuple(ax_slices.values())].compute()
 
                 if vmin is None or vmax is None:
                     subset = np.random.choice(map_slice_data.size, size=min(map_slice_data.size, 100000), replace=False)
                     slice_vmin, slice_vmax = np.nanquantile(
                         map_slice_data.ravel()[subset],
-                        weights=map_slice_weights.ravel()[subset],
+                        weights=map_slice_weight.ravel()[subset],
                         q=(rel_vmin, rel_vmax),
                         method="inverted_cdf",
                     )
@@ -726,7 +701,7 @@ class ProjectionMap(Map):
                 if "t" in ax_slices:
                     slice_info.append(f"{self.t[ax_slices['t']]}")
 
-                cbar.set_label(rf"${u['math_name']}$ ({', '.join(slice_info)})", fontsize=10)
+                cbar.set_label(rf"${map_units_repr}$ ({', '.join(slice_info)})", fontsize=10)
 
                 ax.tick_params(axis="x", bottom=True, top=False)
                 ax.tick_params(axis="y", left=True, right=False, rotation=90)
