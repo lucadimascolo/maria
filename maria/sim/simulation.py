@@ -9,11 +9,11 @@ import numpy as np
 from tqdm import tqdm
 
 from ..atmosphere import Atmosphere
-from ..cmb import CMB, generate_cmb, get_cmb
+from ..cmb import generate_cmb, get_cmb
 from ..coords import Coordinates
 from ..errors import PointingError
 from ..instrument import Instrument, get_instrument
-from ..io import fetch, humanize_time, read_yaml
+from ..io import DEFAULT_BAR_FORMAT, fetch, humanize_time, read_yaml
 from ..map import Map, load
 from ..plan import Plan, PlanList, get_plan
 from ..site import Site, get_site
@@ -182,6 +182,8 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
                 f"assigned {len(rank_indices)} of {n_dets} detectors (interleaved)"
             )
 
+        self.obs_list = self._build_obs_list(self.instrument)
+        self.maps = {}
         if cmb:
             cmb_start_s = ttime.monotonic()
             self.cmb_kwargs = DEFAULT_CMB_SIM_KWARGS.copy()
@@ -369,12 +371,12 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             obs.loading["atmosphere"] = self._compute_atmospheric_loading(obs)
             logger.debug(f"Ran atmosphere simulation in {humanize_time(ttime.monotonic() - atmosphere_sim_start_s)}.")
 
-        if hasattr(self, "cmb"):
-            cmb_sim_start_s = ttime.monotonic()
-            obs.loading["cmb"] = self._compute_cmb_loading(obs)
-            logger.debug(f"Ran CMB simulation in {humanize_time(ttime.monotonic() - cmb_sim_start_s)}.")
+        # if hasattr(self, "cmb"):
+        #     cmb_sim_start_s = ttime.monotonic()
+        #     obs.loading["cmb"] = self._compute_cmb_loading(obs)
+        #     logger.debug(f"Ran CMB simulation in {humanize_time(ttime.monotonic() - cmb_sim_start_s)}.")
 
-        if hasattr(self, "map"):
+        if self.maps:
             map_sim_start_s = ttime.monotonic()
             self._sample_maps(obs)
             logger.debug(f"Ran map simulation in {humanize_time(ttime.monotonic() - map_sim_start_s)}.")
