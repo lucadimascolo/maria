@@ -314,6 +314,51 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
 
         return saved_paths if save_dir else all_tods
 
+    def stream(self, units: str = "K_RJ"):
+        """Yield one TOD at a time, sharing the atmospheric realization across chunks.
+
+        Intended for memory-efficient streaming pipelines where the caller
+        accumulates each TOD (e.g. into a mapper) and discards it immediately.
+        The atmosphere GP field is retained on ``ref_obs_list`` between chunks,
+        so all chunks see the same atmospheric realization.
+        """
+        if self._seed is not None:
+            np.random.seed(self._seed)
+
+        n_dets = len(self.instrument.dets)
+        all_indices = np.arange(n_dets)
+        ref_obs_list = None
+
+        for chunk_idx in range(self._n_chunks):
+            if self._n_chunks > 1:
+                mask = np.zeros(n_dets, dtype=bool)
+                mask[all_indices[chunk_idx :: self._n_chunks]] = True
+                chunk_instrument = self.instrument._subset(mask)
+                logger.info(
+                    f"Chunk {chunk_idx + 1}/{self._n_chunks}: "
+                    f"{mask.sum()} of {n_dets} detectors (interleaved)"
+                )
+                if self._seed is not None:
+                    np.random.seed(self._seed)
+            else:
+                chunk_instrument = self.instrument
+
+            if ref_obs_list is None:
+                obs_list = self._build_obs_list(chunk_instrument)
+                ref_obs_list = obs_list
+            else:
+                obs_list = self._build_obs_list_from_reference(ref_obs_list, chunk_instrument)
+
+            for obs_index, obs in enumerate(obs_list):
+                logger.info(f"Simulating observation {obs_index + 1} of {len(obs_list)}")
+                obs_start_s = ttime.monotonic()
+                tod = self.run_obs(obs).to(units)
+                logger.info(
+                    f"Simulated observation {obs_index + 1} of {len(obs_list)} "
+                    f"in {humanize_time(ttime.monotonic() - obs_start_s)}"
+                )
+                yield tod
+
     def run_obs(self, obs: Observation) -> TOD:
         obs.loading = {}
 

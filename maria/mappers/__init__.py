@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..map import Map
 from .bin_mapper import BinMapper  # noqa
 from .ml_mapper import MaximumLikelihoodMapper  # noqa
+from .streaming_ml_mapper import StreamingMaximumLikelihoodMapper  # noqa
 
 
 def compute_residual_map(input_map: Map, output_map: Map):
