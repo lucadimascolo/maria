@@ -463,6 +463,9 @@ class ProjectionMap(Map):
         window="hann",
         taper: float = 0.1,
         pad_factor: int = 1,
+        u_min: float | None = None,
+        u_max: float | None = None,
+        method: str = "cross",
     ):
         """Compute the spatial transfer function relative to an input map.
 
@@ -502,7 +505,8 @@ class ProjectionMap(Map):
         -------
         TransferFunction
         """
-        from .transfer import TransferFunction, compute_transfer_function
+        from .transfer import (TransferFunction, compute_transfer_function_auto,
+                               compute_transfer_function_cross, compute_transfer_function_pcl)
 
         if input_map is None:
             input_map = getattr(self, "_input_map", None)
@@ -514,22 +518,38 @@ class ProjectionMap(Map):
         n_nu = self.dims["nu"] if "nu" in self.dims else 1
         nu_indices = list(np.atleast_1d(slices["nu"])) if (slices and "nu" in slices) else list(range(n_nu))
 
-        rows = [
-            compute_transfer_function(
-                input_map,
-                self,
-                n_bins=n_bins,
-                stokes=stokes,
-                nu_index=i,
-                t_index=t_index,
-                window=window,
-                taper=taper,
-                pad_factor=pad_factor,
-            )
-            for i in nu_indices
-        ]
-        u = rows[0][0]
-        T = np.stack([r[1] for r in rows])
+        if method == "pcl":
+            rows = [
+                compute_transfer_function_pcl(
+                    input_map, self,
+                    n_bins=n_bins, stokes=stokes, nu_index=i, t_index=t_index,
+                    u_min=u_min, u_max=u_max,
+                )
+                for i in nu_indices
+            ]
+        elif method == "auto":
+            rows = [
+                compute_transfer_function_auto(
+                    input_map, self,
+                    n_bins=n_bins, stokes=stokes, nu_index=i, t_index=t_index,
+                    window=window, taper=taper, pad_factor=pad_factor,
+                    u_min=u_min, u_max=u_max,
+                )
+                for i in nu_indices
+            ]
+        else:
+            rows = [
+                compute_transfer_function_cross(
+                    input_map, self,
+                    n_bins=n_bins, stokes=stokes, nu_index=i, t_index=t_index,
+                    window=window, taper=taper, pad_factor=pad_factor,
+                    u_min=u_min, u_max=u_max,
+                )
+                for i in nu_indices
+            ]
+        u   = rows[0][0]
+        T   = np.stack([r[1] for r in rows])
+        coh = np.stack([r[2] for r in rows])
         nu_qty = self.nu[nu_indices] if "nu" in self.dims else None
 
         # Per-channel beam FWHM: average over all slice axes except nu
@@ -544,7 +564,7 @@ class ProjectionMap(Map):
                 all_fwhm = np.full(n_nu, float(np.nanmean(b_major)))
             beam_fwhm = np.asarray(all_fwhm)[nu_indices]
 
-        return TransferFunction(u=u, T=T, nu=nu_qty, beam_fwhm=beam_fwhm, input_map=input_map, output_map=self)
+        return TransferFunction(u=u, T=T, nu=nu_qty, beam_fwhm=beam_fwhm, coherence=coh, input_map=input_map, output_map=self)
 
     def plot(
         self,
