@@ -306,10 +306,13 @@ class Atmosphere:
 
         pp = self.coords.project(z=1)
 
+        _need_generation = not all(
+            getattr(p, "_values_ready", False) for p in self.processes.values()
+        )
         for k, process in tqdm(
             self.processes.items(),
             desc="Generating turbulence",
-            disable=self.disable_progress_bars,
+            disable=self.disable_progress_bars or not _need_generation,
             bar_format=DEFAULT_BAR_FORMAT,
         ):
             process_s = ttime.monotonic()

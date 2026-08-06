@@ -192,6 +192,9 @@ class AutoregressiveProcess:
         if not hasattr(self, "A"):
             self.compute_covariance_matrices()
 
+        if getattr(self, "_values_ready", False):
+            return
+
         n_steps = 2 * self.n_extrusion
         BUFFER = np.random.standard_normal(
             (self.n_extrusion + n_steps, self.n_cross_section),
@@ -207,3 +210,4 @@ class AutoregressiveProcess:
             BUFFER[buffer_index] = new_values
 
         self.values = da.asarray(BUFFER[: self.n_extrusion])
+        self._values_ready = True
