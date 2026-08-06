@@ -182,7 +182,6 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
                 f"assigned {len(rank_indices)} of {n_dets} detectors (interleaved)"
             )
 
-        self.obs_list = self._build_obs_list(self.instrument)
         self.maps = {}
         if cmb:
             cmb_start_s = ttime.monotonic()
