@@ -88,6 +88,14 @@ def download_from_url(
         logger.debug(f"Creating {cache_dir}")
         os.makedirs(cache_dir, exist_ok=True)
 
+    # Write to a per-process temp file, then atomically rename into place. Multiple
+    # concurrent processes (e.g. many SLURM array tasks/MPI ranks starting at once on a
+    # cold cluster) can otherwise race on the same cache_path: two writers truncating
+    # and streaming into the same destination file concurrently can leave a torn/corrupt
+    # file that a third reader picks up mid-write. Each writer gets its own temp path
+    # (keyed by pid) so concurrent downloads never collide with each other either.
+    tmp_path = f"{cache_path}.tmp.{os.getpid()}"
+
     try:
         with requests.get(source_url, stream=True) as r:
             r.raise_for_status()
@@ -101,15 +109,23 @@ def download_from_url(
                 bar_format=DEFAULT_BAR_FORMAT,
                 ncols=250,
             ) as pbar:
-                with open(cache_path, "wb") as f:
+                with open(tmp_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size):
                         f.write(chunk)
                         pbar.update(len(chunk))
 
+        os.replace(tmp_path, cache_path)
+
     except HTTPError as error:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
         if error.response.status_code == 404:
             raise error
         return f"Encountered error while downloading {source_url}: {repr(error)}"
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
     return cache_status(cache_path, max_age=max_age, refresh=False)
 

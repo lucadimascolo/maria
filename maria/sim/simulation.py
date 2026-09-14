@@ -261,20 +261,35 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             obs_list.append(obs)
         return obs_list
 
-    def run(self, units: str = "K_RJ", save_dir: str = None):
-        # Reseed here so that the atmosphere AR process always starts from the
-        # same PRNG state on every rank, regardless of how many random values
-        # were consumed during __init__ (which varies with n_dets per rank).
+    def _iter_tods(self, units: str = "K_RJ"):
+        """Yield (chunk_idx, obs_index, tod) for every observation in every chunk.
+
+        Reseeds the PRNG before each chunk so the atmosphere AR process always
+        starts from the same PRNG state regardless of how many random values
+        were consumed while building earlier chunks/ranks (which varies with
+        n_dets per chunk/rank). The first chunk builds the atmosphere GP field
+        from scratch; later chunks reuse it via ``_build_obs_list_from_reference``,
+        so all chunks see the same atmospheric realization.
+
+        If this Simulation's ``run()``/``stream()`` has already been called once
+        (see ``rerun()``), the atmosphere's expensive geometry/covariance
+        construction (``Atmosphere.initialize()``) is reused across calls instead
+        of being rebuilt -- only the turbulence realization itself is redrawn,
+        by resetting each ``AutoregressiveProcess``'s ``_values_ready`` flag so
+        ``process.run()`` regenerates it from the (possibly new) seed.
+        """
         if self._seed is not None:
             np.random.seed(self._seed)
 
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-
         n_dets = len(self.instrument.dets)
         all_indices = np.arange(n_dets)
-        all_tods, saved_paths = [], []
-        ref_obs_list = None
+
+        ref_obs_list = getattr(self, "_ref_obs_list", None)
+        if ref_obs_list is not None:
+            for ref_obs in ref_obs_list:
+                if hasattr(ref_obs, "atmosphere"):
+                    for process in ref_obs.atmosphere.processes.values():
+                        process._values_ready = False
 
         for chunk_idx in range(self._n_chunks):
             if self._n_chunks > 1:
@@ -304,14 +319,44 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
                     f"Simulated observation {obs_index + 1} of {len(obs_list)} "
                     f"in {humanize_time(ttime.monotonic() - obs_start_s)}"
                 )
-                if save_dir:
-                    obs_suffix = f"_obs{obs_index:03d}" if len(self.plans) > 1 else ""
-                    path = os.path.join(save_dir, f"tod_rank-{self._mpi_rank}_chunk-{chunk_idx}{obs_suffix}.h5")
-                    tod.save(path)
-                    saved_paths.append(path)
-                    logger.info(f"Saved → {path}")
-                else:
-                    all_tods.append(tod)
+                yield chunk_idx, obs_index, tod
+
+        self._ref_obs_list = ref_obs_list
+
+    def rerun(self, seed: int, units: str = "K_RJ", save_dir: str = None):
+        """Rerun this Simulation with a new seed, reusing the atmosphere's already-
+        computed geometry/covariance construction (the expensive part of
+        ``Atmosphere.initialize()``) instead of rebuilding it -- only the
+        turbulence realization, noise, and gain error are redrawn from the new
+        seed. Requires ``run()``/``stream()`` to have completed at least once on
+        this Simulation object (same instrument/site/plan, only ``seed`` differs).
+
+        Note: this does NOT reproduce the exact output a fresh ``Simulation(...,
+        seed=seed)`` would have produced -- skipping the covariance construction
+        also skips a PRNG draw it would otherwise have consumed, so the two paths
+        diverge in the exact random numbers drawn. Both are equally valid,
+        independent realizations for the given seed; only reproducibility of a
+        *specific* seed's numbers against the from-scratch path is not preserved.
+        """
+        if getattr(self, "_ref_obs_list", None) is None:
+            raise RuntimeError("rerun() requires run() or stream() to have completed at least once first.")
+        self._seed = seed
+        return self.run(units=units, save_dir=save_dir)
+
+    def run(self, units: str = "K_RJ", save_dir: str = None):
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
+        all_tods, saved_paths = [], []
+        for chunk_idx, obs_index, tod in self._iter_tods(units):
+            if save_dir:
+                obs_suffix = f"_obs{obs_index:03d}" if len(self.plans) > 1 else ""
+                path = os.path.join(save_dir, f"tod_rank-{self._mpi_rank}_chunk-{chunk_idx}{obs_suffix}.h5")
+                tod.save(path)
+                saved_paths.append(path)
+                logger.info(f"Saved → {path}")
+            else:
+                all_tods.append(tod)
 
         return saved_paths if save_dir else all_tods
 
@@ -320,45 +365,9 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
 
         Intended for memory-efficient streaming pipelines where the caller
         accumulates each TOD (e.g. into a mapper) and discards it immediately.
-        The atmosphere GP field is retained on ``ref_obs_list`` between chunks,
-        so all chunks see the same atmospheric realization.
         """
-        if self._seed is not None:
-            np.random.seed(self._seed)
-
-        n_dets = len(self.instrument.dets)
-        all_indices = np.arange(n_dets)
-        ref_obs_list = None
-
-        for chunk_idx in range(self._n_chunks):
-            if self._n_chunks > 1:
-                mask = np.zeros(n_dets, dtype=bool)
-                mask[all_indices[chunk_idx :: self._n_chunks]] = True
-                chunk_instrument = self.instrument._subset(mask)
-                logger.info(
-                    f"Chunk {chunk_idx + 1}/{self._n_chunks}: "
-                    f"{mask.sum()} of {n_dets} detectors (interleaved)"
-                )
-                if self._seed is not None:
-                    np.random.seed(self._seed)
-            else:
-                chunk_instrument = self.instrument
-
-            if ref_obs_list is None:
-                obs_list = self._build_obs_list(chunk_instrument)
-                ref_obs_list = obs_list
-            else:
-                obs_list = self._build_obs_list_from_reference(ref_obs_list, chunk_instrument)
-
-            for obs_index, obs in enumerate(obs_list):
-                logger.info(f"Simulating observation {obs_index + 1} of {len(obs_list)}")
-                obs_start_s = ttime.monotonic()
-                tod = self.run_obs(obs).to(units)
-                logger.info(
-                    f"Simulated observation {obs_index + 1} of {len(obs_list)} "
-                    f"in {humanize_time(ttime.monotonic() - obs_start_s)}"
-                )
-                yield tod
+        for _chunk_idx, _obs_index, tod in self._iter_tods(units):
+            yield tod
 
     def run_obs(self, obs: Observation) -> TOD:
         obs.loading = {}
