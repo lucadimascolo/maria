@@ -4,6 +4,8 @@ import logging
 import time as ttime
 
 import dask.array as da
+import jax
+import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
@@ -14,6 +16,59 @@ from ..utils import fast_psd_inverse
 logger = logging.getLogger("maria")
 
 COV_MAT_JITTER = 1e-6
+
+# below this many steps, a fresh XLA compile (new shapes each call) costs more than the
+# compiled scan saves over the plain Python loop; see maria/atmosphere/process.py benchmarks.
+SCAN_MIN_STEPS = 4000
+
+
+def _generate_autoregressive_values_loop(A, B, tail, step_noise, extrusion_sample_index, cross_section_sample_index):
+    """
+    Plain sequential fallback for small problems, equivalent to `_generate_autoregressive_values`
+    but without the fixed per-call JIT-compilation overhead of the scan.
+    """
+    n_extrusion, n_cross_section = tail.shape
+    n_steps = step_noise.shape[0]
+
+    BUFFER = np.empty((n_extrusion + n_steps, n_cross_section))
+    BUFFER[n_steps:] = tail
+
+    for k, buffer_index in enumerate(range(n_steps - 1, -1, -1)):
+        BUFFER[buffer_index] = A @ BUFFER[
+            buffer_index + extrusion_sample_index + 1,
+            cross_section_sample_index,
+        ] + B @ step_noise[k]
+
+    return BUFFER[:n_extrusion]
+
+
+@jax.jit
+def _generate_autoregressive_values(A, B, tail, step_noise, extrusion_sample_index, cross_section_sample_index):
+    """
+    Runs the linear autoregressive recursion `v[t] = A @ v[t+1:t+1+n_extrusion][sample] + B @ noise[t]`
+    (for decreasing t) as a compiled scan instead of a Python loop.
+
+    `tail` is the initial window of shape (n_extrusion, n_cross_section) holding the "future" values
+    that seed the recursion, and `step_noise` has shape (n_steps, n_live_edge) with n_steps == 2 * n_extrusion.
+
+    The window is kept as a fixed-size ring buffer (indexed by absolute step mod n_extrusion) rather
+    than shifted every step, so each step does O(1) work instead of O(n_extrusion).
+    """
+    n_extrusion = tail.shape[0]
+    n_steps = step_noise.shape[0]
+    t_values = jnp.arange(n_steps - 1, -1, -1)
+
+    def step(buf, xs):
+        t, noise = xs
+        slot = (t + 1 + extrusion_sample_index) % n_extrusion
+        sampled = buf[slot, cross_section_sample_index]
+        new_row = A @ sampled + B @ noise
+        buf = buf.at[t % n_extrusion].set(new_row)
+        return buf, new_row
+
+    _, rows = jax.lax.scan(step, tail, (t_values, step_noise))
+
+    return jnp.flip(rows[-n_extrusion:], axis=0)
 
 
 class AutoregressiveProcess:
@@ -196,18 +251,31 @@ class AutoregressiveProcess:
             return
 
         n_steps = 2 * self.n_extrusion
-        BUFFER = np.random.standard_normal(
-            (self.n_extrusion + n_steps, self.n_cross_section),
-        )
 
-        iterator = np.arange(n_steps)[::-1]
+        tail = np.random.standard_normal((self.n_extrusion, self.n_cross_section))
+        step_noise = np.random.standard_normal((n_steps, self.n_live_edge))
 
-        for buffer_index in iterator:
-            new_values = self.A @ BUFFER[
-                buffer_index + self.extrusion_sample_index + 1,
+        if n_steps >= SCAN_MIN_STEPS:
+            values = np.asarray(
+                _generate_autoregressive_values(
+                    jnp.asarray(self.A),
+                    jnp.asarray(self.B),
+                    jnp.asarray(tail),
+                    jnp.asarray(step_noise),
+                    jnp.asarray(self.extrusion_sample_index.astype(np.int32)),
+                    jnp.asarray(self.cross_section_sample_index.astype(np.int32)),
+                ),
+                dtype=tail.dtype,
+            )
+        else:
+            values = _generate_autoregressive_values_loop(
+                self.A,
+                self.B,
+                tail,
+                step_noise,
+                self.extrusion_sample_index,
                 self.cross_section_sample_index,
-            ] + self.B @ np.random.standard_normal(size=self.n_live_edge)
-            BUFFER[buffer_index] = new_values
+            )
 
-        self.values = da.asarray(BUFFER[: self.n_extrusion])
+        self.values = da.asarray(values)
         self._values_ready = True
