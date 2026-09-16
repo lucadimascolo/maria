@@ -42,6 +42,23 @@ OPERATION_KWARGS = {
 }
 
 
+def _fit_design_matrix(B, D):
+    """Least-squares fit of each row of D against the basis B (n_basis, n_time).
+
+    Solves the same regression as ``inv(B @ B.T) @ B @ D.T`` (the normal
+    equations) but via ``np.linalg.lstsq``'s SVD-based solver instead of an
+    explicit inverse. Forming the normal equations squares the design matrix's
+    condition number; when B's rows are nearly collinear (e.g. remove_spline's
+    elevation-gradient terms nearly duplicating its own low-order time content
+    over a short/near-constant-elevation observation), inv(B @ B.T) can have
+    entries many orders of magnitude too large, amplifying tiny per-detector
+    signal differences into huge, unstable fitted components. lstsq instead
+    returns the minimum-norm least-squares solution, which degrades gracefully
+    (near-null directions get ~0 coefficient) instead of exploding.
+    """
+    return np.linalg.lstsq(B.T, D.swapaxes(-2, -1), rcond=None)[0].swapaxes(-2, -1)
+
+
 def process_operation_kwargs(**kwargs):  # lol
     config = {}
 
@@ -115,7 +132,7 @@ def process_tod(tod, config=None, **kwargs):
         el_poly = normalize(tod.boresight.el) ** np.arange(config["remove_polynomial"].get("elevation", 0) + 1)[..., None]
 
         B = (time_poly * az_poly[..., None, :] * el_poly[..., None, None, :]).reshape(-1, D.shape[-1])
-        A = (np.linalg.inv(B @ B.T) @ B @ D.swapaxes(-2, -1)).swapaxes(-2, -1)
+        A = _fit_design_matrix(B, D)
         D -= A @ B
 
     if "remove_spline" in config:
@@ -141,7 +158,7 @@ def process_tod(tod, config=None, **kwargs):
                 [B * rel_el**i for i in range(config["remove_spline"]["remove_el_gradient_order"] + 1)], axis=0
             )
 
-        A = (np.linalg.inv(B @ B.T) @ B @ D.swapaxes(-2, -1)).swapaxes(-2, -1)
+        A = _fit_design_matrix(B, D)
         D -= A @ B
 
         logger.debug(
