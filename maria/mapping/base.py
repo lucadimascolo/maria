@@ -47,10 +47,22 @@ class BaseMapper:
 
         tod_units = units if u["physical_quantity"] in set(VALID_TOD_QUANTITIES) & set(VALID_MAP_QUANTITIES) else "K_RJ"
 
-        mean_std_in_tod_units = np.mean(
-            [Quantity(tod.to(tod_units).signal.std().compute(), units=tod_units) for tod in tods]
-        )
-        self.tod_units = Quantity(mean_std_in_tod_units, tod_units).human_units
+        # NOTE: this used to pick a "human-readable" unit prefix (K_RJ vs mK_RJ vs
+        # uK_RJ, ...) via Quantity(...).human_units, chosen from the std of whichever
+        # `tods` happened to be passed in here. That's fine when `tods` is
+        # representative of the full dataset, but callers that construct a mapper
+        # from just the FIRST chunk/TOD (as an initialization step, before
+        # accumulating the rest) get a unit chosen from a small, unrepresentative
+        # sample -- e.g. under MPI with small per-rank detector chunks, this
+        # std estimate is noisy enough to occasionally cross the K_RJ/mK_RJ
+        # threshold. Every subsequent accumulate() call's `.to(self.tod_units)`
+        # then silently rescales that TOD's data by the corresponding factor
+        # (e.g. 1000x for K_RJ->mK_RJ), non-deterministically per rank/sample --
+        # a real, observed source of map corruption, not just a display glitch.
+        # Use the plain, stable resolved unit instead: correctness here must not
+        # depend on which specific TODs happened to be used to construct the
+        # mapper.
+        self.tod_units = tod_units
         self.map_units = units
 
         if u["physical_quantity"] not in VALID_MAP_QUANTITIES:
