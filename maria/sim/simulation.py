@@ -120,6 +120,27 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             pass
 
         self._mpi = self._mpi_size > 1
+
+        if self._mpi:
+            # each rank is a separate process, and BLAS/OpenMP libraries default to
+            # spawning one thread per core *per process* -- with multiple ranks sharing
+            # a node, that oversubscribes the node's cores. threadpoolctl can cap this
+            # at runtime regardless of backend (OpenBLAS, MKL, ...); MPI parallelism
+            # across ranks is already the intended source of parallelism here.
+            try:
+                from threadpoolctl import threadpool_limits
+
+                threadpool_limits(1)
+                if self._mpi_rank == 0:
+                    logger.debug(f"Running under MPI (size={self._mpi_size}): limited BLAS/OpenMP threads to 1 per rank.")
+            except ImportError:
+                if self._mpi_rank == 0:
+                    logger.warning(
+                        "Running under MPI but 'threadpoolctl' is not installed; each rank's BLAS/OpenMP "
+                        "thread pool may default to using all cores, causing oversubscription when "
+                        "multiple ranks share a node. Install threadpoolctl to avoid this.",
+                    )
+
         self._n_chunks = n_chunks or 1
         self.disable_progress_bars = (
             (not progress_bars)
