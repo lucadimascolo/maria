@@ -248,10 +248,12 @@ class Atmosphere:
 
             cross_section_points = np.concatenate(cross_section_points_list, axis=0)
 
+            process_res_min = self.layers.loc[in_process].res.min()
+
             extrusion_points = np.arange(
-                min_tx - 2 * self.layers.res.min(),
-                max_tx + 2 * self.layers.res.min(),
-                self.layers.res.min(),
+                min_tx - 2 * process_res_min,
+                max_tx + 2 * process_res_min,
+                process_res_min,
             )
 
             outer_scale = np.maximum(1e3, 300 + process_layers.h.mean() / 10)
