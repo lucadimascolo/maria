@@ -64,3 +64,32 @@ def test_pattern_does_not_depend_on_start_time(pattern):
 
     for o in offsets[1:]:
         assert np.allclose(o, offsets[0], atol=1e-9)
+
+
+def test_generate_does_not_mutate_scan_parameters():
+    """P7: Plan.generate wrote the scan centre into its mutable default and into the caller's dict."""
+    scan_parameters = {"radius": 1.0}
+    Plan.generate(start_time=T0, duration=10, scan_parameters=scan_parameters, frame="ra/dec", scan_center=(150.0, -20.0))
+    assert scan_parameters == {"radius": 1.0}
+
+    # without a centre, the next plan must not inherit (150, -20) from the default
+    plan = Plan.generate(start_time=T0, duration=10, scan_type="stare")
+    assert plan.generation_kwargs["scan_parameters"] == {}
+
+
+def test_get_plan_does_not_mutate_the_plan_library():
+    """P-new1: get_plan_config made a shallow copy, so Plan.generate overwrote the built-in plan library."""
+    library = copy.deepcopy(PLAN_CONFIGS)
+    get_plan("ten_second_zenith_stare", frame="ra/dec", scan_center=(150.0, -20.0), start_time=T0)
+    assert PLAN_CONFIGS == library
+
+    plan = get_plan("ten_second_zenith_stare", start_time=T0)
+    assert plan.frame.name == "az/el"
+    assert np.isclose(np.degrees(np.float64(plan.center()[1].rad)), 90.0, atol=1e-4)
+
+
+def test_parse_scan_kwargs_does_not_mutate_its_input():
+    """P7 (same pattern): parse_scan_kwargs mutated its input, e.g. the default of Planner.generate_plans."""
+    scan_kwargs = {}
+    parse_scan_kwargs(scan_kwargs, default_radius=2.0)
+    assert scan_kwargs == {}

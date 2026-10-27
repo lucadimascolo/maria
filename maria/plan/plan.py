@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from copy import deepcopy
 from pathlib import Path
 
 import arrow
@@ -117,12 +118,15 @@ class Plan:
         jitter: float = 0.0,
         roll: float = 0.0,
         scan_type: str = "daisy",
-        scan_parameters: dict = {},
+        scan_parameters: dict = None,
         frame: str = None,
         scan_center: tuple[float, float] = None,
     ):
 
         duration = Quantity(duration, "s")
+
+        # copy, so that neither the caller's dict nor a plan config is modified below
+        scan_parameters = deepcopy(scan_parameters) if scan_parameters is not None else {}
 
         if frame is not None and scan_center is not None:
             # warnings.warn("deprecated", DeprecationWarning)

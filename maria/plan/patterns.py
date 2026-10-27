@@ -31,6 +31,7 @@ VALID_SCAN_KWARGS = [
 
 
 def parse_scan_kwargs(scan_kwargs, default_radius: float = 1.0):
+    scan_kwargs = dict(scan_kwargs)
     for kwarg in scan_kwargs:
         if kwarg not in VALID_SCAN_KWARGS:
             raise ValueError(f"Invalid scan kwarg '{kwarg}'")
