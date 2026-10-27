@@ -88,10 +88,11 @@ class TOD:
         return self._boresight
 
     def calibration_kwargs(self, band=None):
-        band_mask = self.dets.band_name == band.name
+        band_mask = (self.dets.band_name == band.name) if band else np.ones(self.dets.n, dtype=bool)
         kwargs = {
-            "elevation": self.el[band_mask] if band else self.el,
-            "polarized": ~np.isnan(self.dets.gamma[band_mask]).all(),
+            "elevation": self.el[band_mask],
+            # per detector, as a band can have both polarized and unpolarized detectors
+            "polarized": ~np.isnan(self.dets.gamma[band_mask])[:, None],
         }
         if self.metadata["atmosphere"]:
             kwargs["spectrum"] = self.spectrum

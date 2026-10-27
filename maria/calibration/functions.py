@@ -75,7 +75,7 @@ def rayleigh_jeans_temperature_to_power(
     else:
         integral = band.compute_transmission_integral(spectrum=None)
 
-    return (0.5 if polarized else 1.0) * k_B * integral * T_RJ
+    return np.where(polarized, 0.5, 1.0) * k_B * integral * T_RJ
 
 
 def power_to_rayleigh_jeans_temperature(P, band, polarized: bool = False, spectrum=None, **kwargs):
@@ -95,7 +95,7 @@ def power_to_rayleigh_jeans_temperature(P, band, polarized: bool = False, spectr
     else:
         integral = band.compute_transmission_integral(spectrum=None)
 
-    return P / ((0.5 if polarized else 1.0) * k_B * integral)
+    return P / (np.where(polarized, 0.5, 1.0) * k_B * integral)
 
 
 def brightness_temperature_to_power_explicit(T_b, band, polarized: bool = False, spectrum=None, eps: float = 1e-4, **kwargs):
@@ -137,7 +137,8 @@ def brightness_temperature_to_power_explicit(T_b, band, polarized: bool = False,
         )
         integral = np.trapezoid(y=sample_T_RJ * band.passband(shaped_nu), x=band.nu.Hz, axis=-2)
 
-    return (0.5 if polarized else 1.0) * k_B * integral
+    # 'polarized' can be per detector, with the shape of the other kwargs (the last axis of 'integral' is T_b)
+    return np.expand_dims(np.where(polarized, 0.5, 1.0), -1) * k_B * integral
 
 
 def brightness_temperature_to_power(T_b, band, polarized: bool = False, spectrum=None, eps: float = 1e-4, **kwargs):
