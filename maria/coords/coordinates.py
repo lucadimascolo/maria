@@ -128,12 +128,13 @@ class Coordinates:
             fill_value="extrapolate",
         )(self.fid_t).astype(int)
 
-        # three fiducial offsets from the boresight to train a transformation matrix
+        # fiducial offsets around the center to train a transformation matrix: the center itself, and rings of
+        # radius 1, 10 and 30 degrees. The fit is linear, so the fiducials must stay local: a frame change
+        # (aberration, etc.) is not a rotation over the whole sphere.
         # shape: (n_fid, 2)
-        fid_offsets = np.radians([[-1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
         psi = np.linspace(0, 2 * np.pi, 12 + 1)[:-1]
         fid_offsets = np.concatenate(
-            [r * np.c_[np.cos(psi), np.sin(psi)] for r in [1, 10, 30]],
+            [np.zeros((1, 2))] + [np.radians(r) * np.c_[np.cos(psi), np.sin(psi)] for r in [1, 10, 30]],
             axis=0,
         )
 
