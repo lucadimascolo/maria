@@ -36,6 +36,7 @@ class Observation:
         site: Site,
         atmosphere: str = None,
         atmosphere_kwargs: dict = {},
+        disable_progress_bars: bool = False,
     ):
         self.instrument = instrument
         self.plan = plan
@@ -96,6 +97,7 @@ class Observation:
                 seasonal=self.site.seasonal,
                 diurnal=self.site.diurnal,
                 kwargs=self.atmosphere_kwargs,
+                disable_progress_bars=disable_progress_bars,
             )
 
         self.loading = {}

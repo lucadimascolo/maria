@@ -253,7 +253,10 @@ class Weather:
 
     @property
     def wind_bearing(self):
-        return np.arctan2(-self.wind_east.to("m/s"), self.wind_north.to("m/s")) % (2 * np.pi)
+        """
+        The meteorological wind direction in radians: the bearing (clockwise from north) the wind blows *from*.
+        """
+        return np.arctan2(-self.wind_east.to("m/s"), -self.wind_north.to("m/s")) % (2 * np.pi)
 
     @property
     def air_density(self):
