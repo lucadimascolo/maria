@@ -112,6 +112,22 @@ def test_generate_with_instrument_and_no_sample_rate():
     assert stare(instrument=1.0, sample_rate=10).n == 100
 
 
+@pytest.mark.parametrize("rates", [(100.0, 400.0), (400.0, 100.0)])
+def test_plan_dt_of_a_mixed_rate_time_axis(rates):
+    """P-new3 regression: without steps within 50% of the median step (100 samples at 100 Hz, a gap, 101 samples at
+    400 Hz: median 6.25 ms), Plan.dt averaged an empty array, so dt, sample_rate and duration were NaN and end_time
+    raised. It is the median step then, as on master."""
+    n = (100, 101) if rates[0] == 100.0 else (101, 100)
+    time = np.r_[T0 + np.arange(n[0]) / rates[0], T0 + 10 + np.arange(n[1]) / rates[1]]
+    plan = Plan(
+        time=time, phi=np.full(time.size, np.radians(180.0)), theta=np.full(time.size, np.radians(50.0)), frame="az/el"
+    )
+    assert plan.dt == np.median(np.diff(time))
+    assert np.isclose(plan.sample_rate.Hz, 160.0)
+    assert np.isfinite(plan.duration.s)
+    plan.end_time
+
+
 def test_add_plans_keeps_roll_and_location():
     """P9: Plan.__add__ dropped the roll, and crashed for plans without a site."""
     a = stare(roll=30.0, site="cerro_toco")
@@ -190,3 +206,14 @@ def test_planner_run_to_the_end_of_the_lookahead():
     assert len(chunks) > 0
     assert all(chunk["duration"] <= 1800 for chunk in chunks)
     assert all(chunk["start_time"].timestamp() + chunk["duration"] <= T0 + 3600 for chunk in chunks)
+
+
+@pytest.mark.parametrize("duration, sample_rate", [(10, 7), (33.3, 20), (61.7, 50), (600, 100), (1800.5, 400)])
+def test_plan_time_grid_is_exact(duration, sample_rate):
+    """P-new3: np.arange on absolute unix time quantized the step (0.0025000572 s at 400 Hz, a 41 ms drift over
+    30 min) and sometimes gave one sample too many; Plan.sample_rate was off by the same amount."""
+    plan = stare(start_time=T0 + 0.37, duration=duration, sample_rate=sample_rate)
+
+    assert plan.n == int(np.ceil(duration * sample_rate - 1e-9))
+    assert np.abs(plan.time - (T0 + 0.37 + np.arange(plan.n) / sample_rate)).max() < 1e-6
+    assert np.isclose(plan.sample_rate.Hz, sample_rate, rtol=1e-7)
