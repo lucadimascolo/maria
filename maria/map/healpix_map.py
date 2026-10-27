@@ -148,12 +148,16 @@ class HEALPixMap(Map):
             [hp.sphtfunc.smoothing(m.compute(), sigma=sigma.radians) for m in self.data.reshape(-1, self.npix)]
         ).reshape(self.data.shape)
 
+        beam, beam_area_ratio = self._smoothed_beam(sigma)
+        data = data * beam_area_ratio
+
         if inplace:
             self.data = data
+            self.beam = Quantity(beam, "deg")
 
         else:
             package = self.package()
-            package.update({"data": data})
+            package.update({"data": data, "beam": beam})
             return type(self)(**package)
 
     def to_hdf(self, filename):

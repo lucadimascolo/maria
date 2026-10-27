@@ -451,6 +451,9 @@ class ProjectionMap(Map):
         if self._weight is not None:
             package["weight"] = denom
 
+        package["beam"], beam_area_ratio = self._smoothed_beam(sigma)
+        package["data"] = package["data"] * beam_area_ratio
+
         return type(self)(**package)
 
     def transfer_function(

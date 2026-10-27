@@ -187,8 +187,15 @@ class MapMixin:
                         channel_map_data, weights=channel_map.weight.compute(), method="inverted_cdf", q=[0, 100]
                     )
 
-                    # the calibration might need these to compute T_RJ, so give them just to be safe
-                    map_calibration_kwargs = {"pixel_area": channel_map.pixel_area.sr, "beam_area": channel_map.beam_area.sr}
+                    # the calibration might need these to compute T_RJ; it takes scalar areas, so a map in units per
+                    # beam needs a single beam per channel
+                    beam_areas = np.unique(channel_map.beam_area.sr)
+                    if beam_areas.size > 1 and channel_map.u["physical_quantity"] == "spectral_flux_density_per_beam":
+                        raise ValueError(f"The beam of map channel {channel_string} varies along the other dimensions.")
+                    map_calibration_kwargs = {
+                        "pixel_area": float(channel_map.pixel_area.sr),
+                        "beam_area": float(beam_areas[0]),
+                    }
 
                     map_values_trj_spectrum = Calibration(f"{channel_map.units} -> K_RJ", **map_calibration_kwargs)(
                         map_values[:, None], nu=channel_nu
