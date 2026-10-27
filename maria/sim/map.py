@@ -107,10 +107,17 @@ class MapMixin:
 
                 # ideally we would do this for each nu bin, but that's slow
 
-                if not isinstance(m, HEALPixMap):
-                    smoothed_map = m.smooth(fwhm=band_fwhm)
+                if isinstance(m, HEALPixMap):
+                    # full-sky smoothing is slow, so do it once per beam and map data for all observations (Q and U
+                    # as a spin-2 field)
+                    key = (map_name, float(band_fwhm.rad))
+                    # (the map is kept with its data key, so that a new map or an edit of its data is not missed)
+                    cached_map, cached_data, smoothed_map = self._smoothed_healpix_maps.get(key, (None, None, None))
+                    if cached_map is not m or cached_data != m._data_key():
+                        smoothed_map = m._smooth(fwhm=band_fwhm, pol=True)
+                        self._smoothed_healpix_maps[key] = (m, m._data_key(), smoothed_map)
                 else:
-                    smoothed_map = m
+                    smoothed_map = m.smooth(fwhm=band_fwhm)
 
                 logger.debug(f"Convolved map with beam width {band_fwhm} for band {band.name}")
 

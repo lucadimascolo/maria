@@ -52,7 +52,7 @@ def generate_cmb(nside: int = 1024, lmax: int = None, source: str = "lensed", se
         data=cmb_data[:, None, None, :],
         stokes="IQU",
         units="K_CMB",
-        frame="galactic",
+        frame="ra/dec",  # the generated CMB is isotropic, so the frame is a label; ra/dec avoids a transform
         z=z_CMB,
     )
 

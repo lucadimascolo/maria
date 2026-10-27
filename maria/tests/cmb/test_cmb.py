@@ -24,7 +24,7 @@ def test_cmb_calibration():
         plans=plan,
         site="cerro_toco",
         cmb="generate",
-        cmb_kwargs={"nside": 1024},
+        cmb_kwargs={"nside": 512},  # the beam smoothing of a full-sky map is slow at high nside
         noise=False,
     )
 

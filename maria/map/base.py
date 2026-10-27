@@ -204,7 +204,8 @@ class Map:
         for dim in self.dims:
             dim_parity = 1
             dim_values = getattr(self, dim)
-            if (dim_values.size > 1) and dim not in ["stokes"]:
+            # stokes and HEALPix pixel indices have no physical ordering
+            if (dim_values.size > 1) and isinstance(dim_values, Quantity):
                 grad = np.gradient(dim_values.base_units_value)
                 if all(grad < 0):
                     dim_parity *= -1

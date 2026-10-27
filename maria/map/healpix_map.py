@@ -2,6 +2,7 @@ import copy
 import os
 
 import dask.array as da
+import dask.base
 import h5py
 import healpy as hp
 import matplotlib.pyplot as plt
@@ -65,6 +66,7 @@ class HEALPixMap(Map):
             beam=beam,
             map_dims={"pixels": len(pixels)},
             units=units,
+            frame=frame,
             degrees=degrees,
             dtype=dtype,
             enforce_valid_map_quantity=enforce_valid_map_quantity,
@@ -87,7 +89,10 @@ class HEALPixMap(Map):
         samples = np.arange(n_samples).reshape(coords.shape)
         weights = np.ones_like(samples)
 
-        pixels = hp.pixelfunc.ang2pix(self.nside, theta=np.pi / 2 - coords.dec, phi=coords.ra)
+        # sample the map in its own frame
+        phi = getattr(coords, self.frame.phi_name)
+        theta = getattr(coords, self.frame.theta_name)
+        pixels = hp.pixelfunc.ang2pix(self.nside, theta=np.pi / 2 - theta, phi=phi)
 
         # add time index
         if self.dims.get("t", 0) > 1:
@@ -108,7 +113,7 @@ class HEALPixMap(Map):
     def npix(self):
         return self.dims["pixels"]
 
-    def package(self):
+    def package(self, compute: bool = False):
         package = copy.deepcopy(
             {
                 "data": self.data,
@@ -119,8 +124,13 @@ class HEALPixMap(Map):
             }
         )
 
+        if compute:
+            package["data"] = np.asarray(package["data"])
+
         if self._weight is not None:
             package["weight"] = self._weight
+            if compute:
+                package["weight"] = np.asarray(package["weight"])
 
         for dim in self.dims:
             package[dim] = getattr(self, dim)
@@ -136,6 +146,26 @@ class HEALPixMap(Map):
     #     return np.meshgrid(self.x_side, self.y_side)[1]
 
     def smooth(self, sigma: float = None, fwhm: float = None, inplace: bool = False, degrees: bool = True):
+        """
+        Smooth the map with a circular Gaussian beam.
+
+        The spherical harmonic transform of the map (about 1.5 times the size of a float32 map) is kept on the map,
+        so that smoothing it again with another beam is faster.
+        """
+        return self._smooth(sigma=sigma, fwhm=fwhm, inplace=inplace, degrees=degrees)
+
+    def _smooth(
+        self,
+        sigma: float = None,
+        fwhm: float = None,
+        inplace: bool = False,
+        degrees: bool = True,
+        pol: bool = False,
+    ):
+        """
+        smooth(), which can also smooth Q and U as a spin-2 field (pol=True, as healpy.smoothing(pol=True)) instead
+        of as scalar maps, as the simulation does.
+        """
         if not (sigma is None) ^ (fwhm is None):
             raise ValueError("You must supply exactly one of 'sigma' or 'fwhm'.")
 
@@ -144,21 +174,63 @@ class HEALPixMap(Map):
         if not isinstance(sigma, Quantity):
             sigma = Quantity(sigma, "deg" if degrees else "rad")
 
-        data = np.stack(
-            [hp.sphtfunc.smoothing(m.compute(), sigma=sigma.radians) for m in self.data.reshape(-1, self.npix)]
-        ).reshape(self.data.shape)
+        # stokes is always the first dimension when present
+        stokes = list(self.stokes) if "stokes" in self.dims else []
+        maps = np.asarray(self.data).reshape(max(len(stokes), 1), -1, self.npix)
+
+        groups = [[i] for i in range(len(maps))]
+        if pol and {"Q", "U"} <= set(stokes):
+            # Q and U are a spin-2 field, smoothed together with I (or with a zero I if the map has none)
+            iqu = [stokes.index(s) if s in stokes else None for s in "IQU"]
+            groups = [iqu] + [[i] for i in range(len(maps)) if i not in iqu]
+
+        smoothed_maps = np.zeros_like(maps)
+        for k in range(maps.shape[1]):
+            for group in groups:
+                smoothed = self._smooth_slice(maps, group, k, sigma.radians)
+                for i, smoothed_map in zip(group, smoothed):
+                    if i is not None:
+                        smoothed_maps[i, k] = smoothed_map
+
+        data = smoothed_maps.reshape(self.data.shape)
 
         beam, beam_area_ratio = self._smoothed_beam(sigma)
         data = data * beam_area_ratio
 
         if inplace:
-            self.data = data
+            self.data = da.asarray(data)
             self.beam = Quantity(beam, "deg")
 
         else:
             package = self.package()
             package.update({"data": data, "beam": beam})
             return type(self)(**package)
+
+    def _data_key(self):
+        """
+        Identifies the content of the data: the token of a dask array is its name, which changes when it is edited in
+        place, and that of a numpy array (e.g. data assigned to the map) hashes its values.
+        """
+        return dask.base.tokenize(self.data)
+
+    def _smooth_slice(self, maps, indices, k, sigma):
+        """
+        healpy.smoothing of the maps[indices, k] (a spin-2 field if there are three of them; with healpy's default
+        lmax = 3 nside - 1 and iter = 3), with the spherical harmonic transform cached on the map, so that smoothing
+        with several beams (e.g. one per band) does it once.
+        """
+        if getattr(self, "_alm_cache_data", None) != self._data_key():
+            self._alm_cache, self._alm_cache_data = {}, self._data_key()
+
+        lmax = 3 * self.nside - 1
+        pol = len(indices) == 3
+        key = (tuple(indices), k)
+        if key not in self._alm_cache:
+            m = np.stack([maps[i, k] if i is not None else np.zeros(self.npix, dtype=maps.dtype) for i in indices])
+            m[np.isnan(m)] = hp.UNSEEN  # NaN pixels are masked, like healpy's UNSEEN ones (which it sets to zero)
+            self._alm_cache[key] = hp.sphtfunc.map2alm(m if pol else m[0], lmax=lmax, iter=3, pol=pol)
+        alm = hp.sphtfunc.smoothalm(self._alm_cache[key], sigma=sigma, pol=pol, inplace=False)
+        return np.atleast_2d(hp.sphtfunc.alm2map(alm, nside=self.nside, lmax=lmax, pol=pol))
 
     def to_hdf(self, filename):
         with h5py.File(filename, "w") as f:

@@ -175,6 +175,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             logger.info(f"Initialized observation {obs_index + 1}/{len(plan_list)} in {humanize_time(duration_s)}")
 
         self.maps = {}
+        self._smoothed_healpix_maps = {}  # beam-smoothed HEALPix maps, shared by all observations
 
         if cmb:
             cmb_start_s = ttime.monotonic()

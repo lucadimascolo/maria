@@ -58,3 +58,25 @@ def test_smooth_jy_per_beam_point_source():
     # and an intensive map smoothed the same way gives the same brightness
     T = m.to("K_RJ").smooth(fwhm=30 / 3600).data.compute()
     assert np.allclose(s.to("K_RJ").data.compute(), T, rtol=1e-4, atol=1e-4 * T.max())
+
+
+@pytest.mark.parametrize("stokes", ["IQU", "QU", "IQUV"])
+def test_healpix_smooth_polarized(stokes):
+    """_smooth(pol=True) smooths Q and U as a spin-2 field, as healpy.smoothing(pol=True) does."""
+    nside, fwhm = 32, 10.0
+    maps = dict(zip("IQUV", np.random.default_rng(0).standard_normal((4, hp.nside2npix(nside)))))
+    m = HEALPixMap(data=np.stack([maps[s] for s in stokes]), stokes=stokes, units="K_RJ", dtype=np.float64)
+
+    iqu = np.stack([maps["I"] if "I" in stokes else np.zeros_like(maps["I"]), maps["Q"], maps["U"]])
+    expected = dict(zip("IQU", hp.smoothing(iqu, fwhm=np.radians(fwhm), pol=True)))
+    expected["V"] = hp.smoothing(maps["V"], fwhm=np.radians(fwhm))
+
+    smoothed = m._smooth(fwhm=fwhm, pol=True).data.compute()
+    for i, s in enumerate(stokes):
+        assert np.allclose(smoothed[i], expected[s], atol=1e-6 * np.abs(expected[s]).max())
+
+    # the cached harmonic transform follows the data, also when it is edited in place
+    m.data = 2 * m.data
+    assert np.allclose(m._smooth(fwhm=fwhm, pol=True).data.compute(), 2 * smoothed)
+    m.data[:] = 3 * m.data
+    assert np.allclose(m._smooth(fwhm=fwhm, pol=True).data.compute(), 6 * smoothed)

@@ -22,6 +22,7 @@ def test_polarized_map_sim():
         plans=plans,
         atmosphere="2d",
         cmb="generate",
+        cmb_kwargs={"nside": 512},  # the beam smoothing of a full-sky map is slow at high nside
         map=einstein,
     )
 
