@@ -206,13 +206,35 @@ class Band:
         ax.set_ylabel(r"$\tau(\nu)$ [Rayleigh-Jeans]")
         ax.legend()
 
+    # An NEP is the same for every detector, while an NET is each detector's white noise level (referred to Stokes I):
+    # a polarized detector sees half the power of an unpolarized source, so it needs half the NEP for the same NET.
+    # Both NEPs are computed when the sensitivity is set. The NEP, NET_RJ and NET_CMB properties are for unpolarized
+    # detectors.
+
+    def _detector_NEP(self, polarized: bool = False) -> Quantity:
+        return self._polarized_NEP if polarized else self._NEP
+
+    def _set_NET(self, units: str, value):
+        self._NEP, self._polarized_NEP = (
+            Quantity(self.cal(f"{units} -> W", polarized=p, spectrum=self.spectrum, **self.spectrum_kwargs)(value), "W√s")
+            for p in (False, True)
+        )
+
+    @property
+    def NEP(self):
+        return self._NEP
+
+    @NEP.setter
+    def NEP(self, value):
+        self._NEP = self._polarized_NEP = Quantity(value, "W√s")
+
     @property
     def NET_RJ(self):
         return Quantity(self.cal("W -> K_RJ", spectrum=self.spectrum, **self.spectrum_kwargs)(self.NEP.to("W√s")), "K_RJ√s")
 
     @NET_RJ.setter
     def NET_RJ(self, value):
-        self.NEP = Quantity(self.cal("K_RJ -> W", spectrum=self.spectrum, **self.spectrum_kwargs)(value), "W√s")
+        self._set_NET("K_RJ", value)
 
     @property
     def NET_CMB(self):
@@ -222,7 +244,7 @@ class Band:
 
     @NET_CMB.setter
     def NET_CMB(self, value):
-        self.NEP = Quantity(self.cal("K_CMB -> W", spectrum=self.spectrum, **self.spectrum_kwargs)(value), "W√s")
+        self._set_NET("K_CMB", value)
 
     def compute_transmission_integral(
         self,

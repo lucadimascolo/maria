@@ -39,9 +39,11 @@ class NoiseMixin:
 
             band_mask = obs.instrument.dets.band_name == band.name
 
-            total_NEP = band.NEP.to("W√s") + band.NEP_per_loading.to("W√s") * sum(
-                [d[band_mask].compute() for d in obs.loading.values()]
-            )
+            # the NEP that gives the requested NET depends on the detector's polarization
+            polarized = ~np.isnan(obs.instrument.dets.gamma[band_mask])
+            NEP = np.where(polarized, band._detector_NEP(polarized=True).to("W√s"), band.NEP.to("W√s"))[:, None]
+
+            total_NEP = NEP + band.NEP_per_loading.to("W√s") * sum([d[band_mask].compute() for d in obs.loading.values()])
 
             band_offsets = obs.instrument.dets.offsets[band_mask]
             fov = compute_diameter(band_offsets)

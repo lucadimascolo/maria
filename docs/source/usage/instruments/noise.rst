@@ -46,6 +46,15 @@ Since the sensitivity on the sky in temperature units depends on both the instru
                                     "elevation": 45}) # in degrees
 
 
+An NET is the white noise level of each detector's time-ordered data. For a polarized detector, the data in
+temperature units are referred to Stokes I (a uniform map of 1 K_RJ reads 1 K_RJ), and the detector absorbs half of
+the power of an unpolarized source, so it needs half the NEP of an unpolarized detector for the same NET. An NEP is
+the same for every detector, so a polarized detector in a band specified by its NEP has twice the NET of an
+unpolarized one. The ``NEP``, ``NET_RJ`` and ``NET_CMB`` properties of a band are for unpolarized detectors. The
+NET is the noise level without an atmosphere: data in ``K_RJ`` or ``K_CMB`` are corrected for the atmospheric
+extinction, so with an atmosphere the measured white noise level is the NET divided by the band's atmospheric
+transmission.
+
 +++++++++++++++
 Non-white noise
 +++++++++++++++

@@ -27,7 +27,10 @@ def _bands_are_equivalent(band, other) -> bool:
         np.array_equal(band.nu.Hz, other.nu.Hz)
         and np.array_equal(band.tau, other.tau)
         and all(getattr(band, a) == getattr(other, a) for a in ["efficiency", "knee", "gain_error", "time_constant"])
-        and np.isclose(band.NEP.to("W√s"), other.NEP.to("W√s"), rtol=1e-9, atol=0)
+        and all(
+            np.isclose(band._detector_NEP(pol).to("W√s"), other._detector_NEP(pol).to("W√s"), rtol=1e-9, atol=0)
+            for pol in [False, True]
+        )
         and np.isclose(band.NEP_per_loading.to("W√s"), other.NEP_per_loading.to("W√s"), rtol=1e-9, atol=0)
         and (band.spectrum_kwargs == other.spectrum_kwargs)
         and (getattr(band.spectrum, "region", None) == getattr(other.spectrum, "region", None))
