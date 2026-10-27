@@ -95,6 +95,10 @@ class Coordinates:
         # dicts for caching metadata
         self.centers = {}
 
+        # an optional reference track (t, phi, theta) in this frame, around which the frame transforms are fitted
+        # (e.g. the boresight). Without one, the transforms are fitted around the center of these coordinates.
+        self._fit_reference = None
+
     def initialize(self):
         """
         Do all the initial computations needed to convert to some other frame.
@@ -103,8 +107,8 @@ class Coordinates:
         ref_time = ttime.monotonic()
 
         self.shaped_t = np.atleast_1d(self.t)
-        keep_dims = (-1,) if hasattr(self.t, "__len__") else ()
-        t_ordered_center_phi_theta = np.c_[get_center_phi_theta(self._phi, self._theta, keep_dims=keep_dims)]
+        fit_t, fit_phi, fit_theta = self._fit_reference or self._center_track(self._phi, self._theta)
+        fit_center_phi_theta = np.c_[fit_phi, fit_theta]
 
         # (n_nodes) times at which the transform is computed with astropy: the points of an absolute time grid that
         # _interpolate_transform needs, so that the transform at a given time does not depend on the time span
@@ -113,8 +117,8 @@ class Coordinates:
         self.fid_t = self.fid_node_index * _TRANSFORM_NODE_SPACING_SECONDS
 
         sample_indices = interp1d(
-            self.shaped_t,
-            np.arange(len(self.shaped_t)),
+            fit_t,
+            np.arange(len(fit_t)),
             bounds_error=False,
             kind="nearest",
             fill_value="extrapolate",
@@ -135,8 +139,8 @@ class Coordinates:
         # the fit is done in float64 numpy, so that it is accurate and does not depend on the number of nodes
         fpt = unjitted_offsets_to_phi_theta(
             fid_offsets,
-            np.float64(t_ordered_center_phi_theta[:, 0][sample_indices])[..., None],
-            np.float64(t_ordered_center_phi_theta[:, 1][sample_indices])[..., None],
+            np.float64(fit_center_phi_theta[:, 0][sample_indices])[..., None],
+            np.float64(fit_center_phi_theta[:, 1][sample_indices])[..., None],
             xp=np,
         )
 
@@ -269,6 +273,12 @@ class Coordinates:
 
     def __getitem__(self, key):
         clone = deepcopy(self)
+
+        # a subset fits its frame transforms around the center of the full coordinates, so that a subset (e.g. one
+        # band) gets the same transformed coordinates as the full set
+        if not self.initialized and self._fit_reference is None:
+            clone._fit_reference = self._center_track(self._phi, self._theta)
+
         attrs = ["_x", "_y", "_z", "_r", "_phi", "_theta", "_t"]
         attrs.extend([frames[frame][c] for frame in self.computed_frames for c in ["phi", "theta"]])
         for attr in attrs:
@@ -358,6 +368,13 @@ class Coordinates:
     def compute_points(self):
         return phi_theta_to_xyz(self._phi, self._theta)
 
+    def _center_track(self, phi, theta):
+        """
+        The center of (phi, theta) at each time, as a reference track (t, phi, theta) for the frame transforms.
+        """
+        keep_dims = (-1,) if hasattr(self.t, "__len__") else ()
+        return (np.atleast_1d(self.t), *get_center_phi_theta(phi, theta, keep_dims=keep_dims))
+
     def center(self, frame: str = None):
         frame = Frame(frame or self.frame)
         if frame.name not in self.centers:
@@ -384,13 +401,16 @@ class Coordinates:
 
     def broadcast(self, offsets, frame="az/el"):
         phi_theta = unjitted_offsets_to_phi_theta(offsets[..., None, :], self.az, self.el)
-        return Coordinates(
+        coords = Coordinates(
             t=self.t,
             phi=phi_theta[..., 0],
             theta=phi_theta[..., 1],
             earth_location=self.earth_location,
             frame="az/el",
         )
+        # fit the frame transforms around the boresight, so that they do not depend on which offsets are present
+        coords._fit_reference = self._center_track(self.az, self.el)
+        return coords
 
     def offsets(self, frame, center=None, compute: bool = False):
         offsets_s = ttime.monotonic()

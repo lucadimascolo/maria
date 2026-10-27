@@ -146,3 +146,78 @@ def test_offsets_near_zenith(el):
 
     assert err.max() < 0.1, f"max error {err.max():.3f} arcsec"
     assert (phi_theta[:, 1] <= np.float32(np.pi / 2)).all()
+
+
+@pytest.mark.parametrize("el", [40.0, 70.0])
+def test_transform_does_not_depend_on_detectors(el):
+    """P4: the transform was fitted around the centre of whichever detectors are present, so the same detector got a
+    different ra/dec in a sub-array than in the full array (0.9-1.2" for sub-arrays 10 deg apart)."""
+    t = T0 + np.arange(0, 600, 5.0)
+    sub = grid_offsets(n=3, spacing_deg=0.25)
+    offsets = np.r_[sub + np.radians([-5.0, 0.0]), sub + np.radians([5.0, 0.0])]
+
+    full = boresight(t, 120.0, el).broadcast(offsets)
+    part = boresight(t, 120.0, el).broadcast(offsets[: len(sub)])
+
+    err = separation_arcsec(part.ra, part.dec, full.ra[: len(sub)], full.dec[: len(sub)])
+    assert err.max() < 1e-3, f"max difference {err.max():.4f} arcsec"
+
+
+@pytest.mark.parametrize("keys", [[slice(6, None)], [slice(2, 9), slice(1, 4)], [(slice(0, 4), slice(10, 50))], [3]])
+def test_subset_uses_the_same_transform(keys):
+    """P4: a subset (sliced before ra/dec is computed) fitted its own transform around its own centre (0.2-0.8" here)."""
+    t = T0 + np.arange(0, 100, 1.0)
+    offsets = np.radians(np.c_[np.linspace(-5, 5, 11), np.zeros(11)])
+
+    def subset(coords):
+        for key in keys:
+            coords = coords[key]
+        return coords
+
+    coords = boresight(t, 30.0, 50.0).broadcast(offsets)
+    ra, dec = subset(np.asarray(coords.ra)), subset(np.asarray(coords.dec))
+    sliced = subset(boresight(t, 30.0, 50.0).broadcast(offsets))
+
+    err = separation_arcsec(sliced.ra, sliced.dec, ra, dec)
+    assert err.max() < 1e-3, f"max difference {err.max():.4f} arcsec"
+
+
+def test_band_slice_uses_the_same_transform():
+    """P-new2: the map and CMB are sampled with obs.coords[band_mask], which fitted its own transform, while the
+    mappers use the full obs.coords (1.45" for two single-band arrays 10 deg apart)."""
+    import maria
+    from maria.instrument import Band
+    from maria.plan import Plan
+    from maria.sim.observation import Observation
+
+    f090 = Band(center=90e9, width=20e9, NET_RJ=1e-5)
+    f150 = Band(center=150e9, width=30e9, NET_RJ=1e-5)
+    instrument = maria.get_instrument(
+        arrays=[
+            dict(field_of_view=0.5, bands=[f090], primary_size=6, focal_plane_offset=[-5.0, 0.0]),
+            dict(field_of_view=0.5, bands=[f150], primary_size=6, focal_plane_offset=[5.0, 0.0]),
+        ]
+    )
+    plan = Plan.generate(
+        start_time=T0,
+        duration=600,
+        sample_rate=2,
+        scan_type="daisy",
+        frame="az/el",
+        scan_center=(120.0, 50.0),
+        scan_parameters={"radius": 0.5, "speed": 0.1},
+        site="cerro_toco",
+    )
+    obs = Observation(instrument=instrument, plan=plan, site=get_site("cerro_toco"))
+
+    for band_name in ["f090", "f150"]:
+        band_mask = np.asarray(obs.instrument.dets.band_name == band_name)
+        band_coords = obs.coords[band_mask]  # as in sim/map.py and sim/cmb.py
+        for lon, lat in [("ra", "dec"), ("l", "b")]:
+            err = separation_arcsec(
+                getattr(band_coords, lon),
+                getattr(band_coords, lat),
+                np.asarray(getattr(obs.coords, lon))[band_mask],
+                np.asarray(getattr(obs.coords, lat))[band_mask],
+            )
+            assert err.max() < 1e-3, f"{band_name} {lon}/{lat}: max difference {err.max():.4f} arcsec"
