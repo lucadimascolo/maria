@@ -289,7 +289,10 @@ class Coordinates:
 
         timestep = timestep or factor * self.timestep
 
-        ds_t = np.arange(self.t.min(), self.t.max(), timestep)
+        # the downsampled times must cover the whole span, so that upsampling never extrapolates
+        n = int(np.ceil((self.t.max() - self.t.min()) / timestep))
+        ds_t = self.t.min() + timestep * np.arange(n + 1)
+        ds_t[-1] = max(ds_t[-1], self.t.max())  # guard against rounding at unix-time magnitudes
         ds_phi = sp.interpolate.interp1d(self.t, self._phi, axis=-1, bounds_error=False, fill_value="extrapolate")(ds_t)
 
         ds_theta = sp.interpolate.interp1d(self.t, self._theta, axis=-1, bounds_error=False, fill_value="extrapolate")(ds_t)
