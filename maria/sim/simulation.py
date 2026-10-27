@@ -162,6 +162,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
                 site=self.site,
                 atmosphere=self.atmosphere,
                 atmosphere_kwargs=self.atmosphere_kwargs,
+                disable_progress_bars=self.disable_progress_bars,
             )
 
             if hasattr(obs, "atmosphere"):
