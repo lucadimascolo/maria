@@ -40,12 +40,16 @@ def generate_cmb(nside: int = 1024, lmax: int = None, source: str = "lensed", se
     Taken from https://www.zonca.dev/posts/2020-09-30-planck-spectra-healpy.html
     """
 
-    np.random.seed(seed)
-
     cl = get_cmb_spectrum(source=source)
     lmax = lmax or int(np.pi / hp.pixelfunc.nside2resol(nside))
 
-    alm = hp.synalm((cl.TT, cl.EE, cl.BB, cl.TE), lmax=lmax, new=True)
+    # healpy draws from the global NumPy RNG, so seed it for the draw only and then restore it
+    global_rng_state = np.random.get_state()
+    try:
+        np.random.seed(seed)
+        alm = hp.synalm((cl.TT, cl.EE, cl.BB, cl.TE), lmax=lmax, new=True)
+    finally:
+        np.random.set_state(global_rng_state)
     cmb_data = hp.alm2map(alm, nside=nside, lmax=lmax)
 
     return HEALPixMap(
