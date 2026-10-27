@@ -145,8 +145,13 @@ class Planner:
         for start, end in grouper(
             self.mask, min_length=test_points_per_chunk, max_length=test_points_per_chunk + 1, overlap=True
         ):
+            # the test points start, ..., end - 1 satisfy the constraints (end is the first one that does not, or
+            # the end of the lookahead), so the chunk must end at the last good test point
+            if end - start < test_points_per_chunk:
+                continue
+
             this_chunk_duration = np.min(
-                [max_chunk_duration, self.delta_t_test[end] - self.delta_t_test[start], total_duration - duration]
+                [max_chunk_duration, self.delta_t_test[end - 1] - self.delta_t_test[start], total_duration - duration]
             )
 
             debug_str_parts = [f"start = {arrow.get(self.start_time.timestamp() + self.delta_t_test[start])}"]
