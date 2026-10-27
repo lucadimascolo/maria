@@ -81,7 +81,8 @@ class HEALPixMap(Map):
 
         # self.beam = tuple(np.radians(beam) if degrees else beam)
 
-    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = False):
+    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = False, zero_outside: bool = False):
+        # a HEALPix map covers the whole sphere, so no sample is outside it
 
         n_pixels = self.dims["pixels"]
         n_samples = coords.size

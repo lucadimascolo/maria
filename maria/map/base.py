@@ -465,10 +465,14 @@ class Map:
         package["units"] = units
         return type(self)(**package)
 
-    def _stokes_weighted_pointing_matrix_ingredients(self, coords: Coordinates, dets: Array, bilinear: bool = False):
+    def _stokes_weighted_pointing_matrix_ingredients(
+        self, coords: Coordinates, dets: Array, bilinear: bool = False, zero_outside: bool = False
+    ):
 
         M = dets.mueller()
-        samples, pixels, weights, n_pixels, n_samples = self._pointing_matrix_ingredients(coords=coords, bilinear=bilinear)
+        samples, pixels, weights, n_pixels, n_samples = self._pointing_matrix_ingredients(
+            coords=coords, bilinear=bilinear, zero_outside=zero_outside
+        )
 
         # this is really only used in backwards projection during mapping
         if "nu" in self.dims:
@@ -493,12 +497,24 @@ class Map:
         )
 
     def stokes_weighted_pointing_matrix(self, coords: Coordinates, dets: Array, bilinear: bool = False):
+        return self._stokes_weighted_pointing_matrix(coords=coords, dets=dets, bilinear=bilinear)
+
+    def _stokes_weighted_pointing_matrix(
+        self, coords: Coordinates, dets: Array, bilinear: bool = False, zero_outside: bool = False
+    ):
+        """
+        zero_outside: samples beyond the edges of a ProjectionMap get no signal (as in the simulation), instead of
+        the value of the nearest edge pixel (as in the mappers).
+        """
 
         weights, samples, pixels, n_samples, n_pixels = self._stokes_weighted_pointing_matrix_ingredients(
-            coords=coords, dets=dets, bilinear=bilinear
+            coords=coords, dets=dets, bilinear=bilinear, zero_outside=zero_outside
         )
 
-        return sp.sparse.csr_array((weights, (samples, pixels)), shape=(n_samples, n_pixels))
+        P = sp.sparse.csr_array((weights, (samples, pixels)), shape=(n_samples, n_pixels))
+        if zero_outside:
+            P.eliminate_zeros()  # so that samples outside the map do not pick up NaN pixels
+        return P
 
     def sample_nu(self, nu):
         map_nu_interpolator = sp.interpolate.interp1d(self.nu.Hz, self.data, axis=1, kind="linear")

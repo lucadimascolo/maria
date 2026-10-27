@@ -132,10 +132,12 @@ class MapMixin:
 
                 pointing_s = ttime.monotonic()
 
-                P = m[:, 0].stokes_weighted_pointing_matrix(
+                # there is no sky signal beyond the edges of the input map
+                P = m[:, 0]._stokes_weighted_pointing_matrix(
                     coords=band_coords,
                     dets=band_dets,
                     bilinear=self.map_kwargs.get("bilinear_sampling", DEFAULT_MAP_SIM_KWARGS["bilinear_sampling"]),
+                    zero_outside=True,
                 )
                 logger.debug(
                     f"Computed pointing matrix for band {band.name} in {humanize_time(ttime.monotonic() - pointing_s)}"
