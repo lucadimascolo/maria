@@ -279,6 +279,10 @@ class Coordinates:
         if not self.initialized and self._fit_reference is None:
             clone._fit_reference = self._center_track(self._phi, self._theta)
 
+        # cached metadata describe the parent, not the slice
+        clone.centers = {}
+        clone.__dict__.pop("summary", None)
+
         attrs = ["_x", "_y", "_z", "_r", "_phi", "_theta", "_t"]
         attrs.extend([frames[frame][c] for frame in self.computed_frames for c in ["phi", "theta"]])
         for attr in attrs:

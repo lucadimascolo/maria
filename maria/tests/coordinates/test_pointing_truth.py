@@ -182,6 +182,20 @@ def test_subset_uses_the_same_transform(keys):
     assert err.max() < 1e-3, f"max difference {err.max():.4f} arcsec"
 
 
+@pytest.mark.parametrize("key", [(slice(None), slice(30, 70)), (slice(None), slice(5, 6))])
+def test_time_slice_after_a_transform(key):
+    """A time slice of coordinates that already computed one frame must compute the others on its own times."""
+    t = T0 + np.arange(0, 100, 1.0)
+    offsets = np.radians(np.c_[np.linspace(-1, 1, 5), np.zeros(5)])
+    coords = boresight(t, 30.0, 50.0).broadcast(offsets)
+    coords.ra  # noqa: B018 (initializes the transforms)
+    sliced = coords[key]
+    full = boresight(t, 30.0, 50.0).broadcast(offsets)
+    assert sliced.l.size == sliced.phi.size  # (a 1-sample slice may drop its time axis, as on master)
+    assert np.allclose(sliced.l, full.l[key].reshape(sliced.l.shape), atol=1e-10)
+    assert np.allclose(sliced.b, full.b[key].reshape(sliced.b.shape), atol=1e-10)
+
+
 def test_band_slice_uses_the_same_transform():
     """P-new2: the map and CMB are sampled with obs.coords[band_mask], which fitted its own transform, while the
     mappers use the full obs.coords (1.45" for two single-band arrays 10 deg apart)."""
@@ -221,3 +235,17 @@ def test_band_slice_uses_the_same_transform():
                 np.asarray(getattr(obs.coords, lat))[band_mask],
             )
             assert err.max() < 1e-3, f"{band_name} {lon}/{lat}: max difference {err.max():.4f} arcsec"
+
+
+def test_slice_does_not_keep_the_cached_center():
+    """P5: a slice returned the cached centre of its parent (3 deg on the sky here)."""
+    t = T0 + np.arange(0, 60, 1.0)
+    offsets = np.radians(np.c_[np.linspace(-5, 5, 11), np.zeros(11)])
+
+    coords = boresight(t, 100.0, 45.0).broadcast(offsets)
+    coords.center("az/el")  # cache the centre of the parent
+    for frame in ["az/el", "ra/dec"]:
+        slice_center = coords[6:].center(frame)
+        fresh_center = boresight(t, 100.0, 45.0).broadcast(offsets[6:]).center(frame)
+        err = separation_arcsec(slice_center[0].rad, slice_center[1].rad, fresh_center[0].rad, fresh_center[1].rad)
+        assert err < 0.1, f"{frame}: slice centre is {err:.1f} arcsec off"
