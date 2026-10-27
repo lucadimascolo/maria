@@ -80,3 +80,31 @@ The size of a scan can be given in two ways, and ``speed`` means a different thi
   rate of change of the coordinate. For an ``az_throw`` this is the azimuth rate of the mount, and the speed on the sky is
   ``speed * cos(el)`` (half the requested value at an elevation of 60 degrees). This is the usual convention for
   constant-elevation scans.
+
++++++++++++++++++++++
+Pointing conventions
++++++++++++++++++++++
+
+**Geometric az/el.** maria's azimuth and elevation are geometric (vacuum) positions: atmospheric refraction is not
+modelled, and the conversion to ``ra/dec`` (ICRS) and ``galactic`` matches astropy's ``AltAz`` frame with ``pressure=0``.
+Pointing positions from a real telescope or a real scan schedule are usually apparent (refracted) positions, which are
+higher by about 1' at an elevation of 30 degrees, 34" at 45 degrees and 19" at 60 degrees for a high, dry site at
+millimeter wavelengths. Refraction cancels in simulate-then-map round trips within maria.
+
+**Detector offsets.** Detector offsets ``(x, y)`` around a center are a zenithal equidistant (ARC) projection: a point at
+an angular distance ``r`` and position angle ``p`` from the center (measured from the direction of increasing latitude
+towards increasing longitude) has ``x = -r sin(p)`` and ``y = r cos(p)``. So ``+y`` points towards increasing latitude
+(elevation or declination), and ``+x`` towards *decreasing* longitude: ``x ≈ -Δaz cos(el)`` in ``az/el`` and
+``x ≈ -ΔRA cos(dec)`` in ``ra/dec``. In ``ra/dec`` this is the usual sky-image orientation (north up, east to the left).
+Because azimuth and right ascension increase in opposite senses on the sky, the ``az/el`` and ``ra/dec`` offset frames are
+mirror images of each other (the Jacobian between them has determinant -1).
+
+The instrument's detector offsets are applied in the ``az/el`` offset frame, after a counter-clockwise rotation (from
+``+x`` towards ``+y``) by the plan's ``roll``. Seen by an observer facing the boresight, ``+x`` is to the left and ``+y``
+is up. Offsets from an instrument that uses the convention ``ξ = +Δaz cos(el)`` must have their ``x`` negated.
+
+**Polarization angles.** A detector's polarization angle ``gamma`` is applied as a fixed angle in the Q/U basis of the
+sky map being sampled (the frame of that map). It does not rotate with the plan's ``roll`` or with the parallactic angle.
+
+**Limits.** The boresight speed is checked against the instrument's azimuth speed limit (with a warning only); the
+elevation speed and the acceleration are not checked.

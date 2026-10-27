@@ -49,6 +49,22 @@ _TRANSFORM_NODE_SPACING_SECONDS = 60.0
 class Coordinates:
     """
     A class for managing coordinates, allowing us to access different coordinate frames at once.
+
+    Azimuth and elevation are geometric (vacuum) positions: atmospheric refraction is not modelled, and the conversion
+    to ra/dec (ICRS) and galactic coordinates matches astropy's AltAz frame with pressure=0. Real telescope pointing is
+    usually given as apparent (refracted) positions, which differ by ~1' at an elevation of 30 degrees.
+
+    The conversions to other frames are a 3x3 matrix fitted on fiducial points around the center of the coordinates
+    (or around the boresight, for coordinates made by `broadcast` and their slices), computed with astropy every 60
+    seconds of absolute time and interpolated in between. They agree with astropy to ~0.1" near that center while it
+    stays within ~5 degrees over +-2 minutes. The error grows with the distance from the center (~0.3" at 10 degrees,
+    ~1" at 20 degrees) and with the motion of the center: for back-and-forth azimuth scans at 30-70 degrees
+    elevation it is up to ~0.5" for a +-10 degree throw, ~0.2-1.8" for +-20 degrees and ~2-12" for +-60 degrees
+    (largest at low elevation), and time chunks of a +-20 degree scan differ by up to ~0.6".
+
+    Offsets (see `offsets`, `broadcast`) are a zenithal equidistant projection with +y towards increasing latitude
+    and +x towards decreasing longitude (x ~ -dphi * cos(theta)), so the az/el and ra/dec offset frames are mirror
+    images of each other.
     """
 
     def __init__(
@@ -340,7 +356,7 @@ class Coordinates:
     def summary(self):
         # compute summary for the string repr
         summary = pd.DataFrame(columns=["min", "mean", "max"])
-        boresight = self.boresight
+        boresight = self.boresight()
         for attr in ["az", "el", "ra", "dec"]:
             for stat in ["min", "mean", "max"]:
                 summary.loc[attr, stat] = f"{float(np.degrees(getattr(getattr(boresight, attr), stat)())):.03f}°"
