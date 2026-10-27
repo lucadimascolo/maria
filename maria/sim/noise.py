@@ -43,7 +43,10 @@ class NoiseMixin:
             polarized = ~np.isnan(obs.instrument.dets.gamma[band_mask])
             NEP = np.where(polarized, band._detector_NEP(polarized=True).to("W√s"), band.NEP.to("W√s"))[:, None]
 
-            total_NEP = NEP + band.NEP_per_loading.to("W√s") * sum([d[band_mask].compute() for d in obs.loading.values()])
+            # NEP_per_loading is the extra NEP (in W√s) per pW of optical loading, added linearly. A detector cannot
+            # absorb negative power, so zero-mean (e.g. CMB or map) loading must not lower the NEP below its base value.
+            loading = sum([d[band_mask].compute() for d in obs.loading.values()])
+            total_NEP = NEP + band.NEP_per_loading.to("W√s") * np.maximum(loading, 0)
 
             band_offsets = obs.instrument.dets.offsets[band_mask]
             fov = compute_diameter(band_offsets)

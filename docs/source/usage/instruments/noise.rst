@@ -80,3 +80,12 @@ more than 16 detectors get five spatially smooth modes, and smaller bands get a 
 
 The noise (white, pink and correlated) is drawn from NumPy's global random state, so ``np.random.seed`` makes a
 simulation reproducible, and each call of ``run()`` gives a new realization.
+
+++++++++++++++++++++++++++
+Loading-dependent noise
+++++++++++++++++++++++++++
+
+A band's ``NEP_per_loading`` (default 0) adds noise that grows with the optical loading of each detector: the NEP
+used for each sample is ``NEP + NEP_per_loading * P``, with ``NEP_per_loading`` in W√s per pW of loading and ``P``
+the total simulated loading in pW (atmosphere and sky), clipped at zero. This is a linear model, not a
+photon-noise (√P) model.
