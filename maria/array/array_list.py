@@ -158,7 +158,8 @@ class ArrayList:
         return np.concatenate([array.mask(**kwargs) for array in self.arrays], axis=0)
 
     def subset(self, **kwargs):
-        return ArrayList([array.subset(**kwargs).dets for array in self.arrays])
+        subsets = [array.subset(**kwargs) for array in self.arrays]
+        return ArrayList([array for array in subsets if array.n > 0])
 
     def summary(self):
         return pd.concat([array.summary() for array in self.arrays], axis=1).T
