@@ -171,9 +171,11 @@ class Plan:
         start_time = arrow.get(start_time)
 
         time_min = start_time.timestamp()
-        time_max = time_min + duration.seconds
 
-        time = np.arange(time_min, time_max, 1 / sample_rate.Hz)
+        # n samples at exact multiples of the sample period from the start: np.arange on absolute unix times would
+        # quantize the step to the float64 resolution of the start time (2.4e-7 s) and accumulate the error
+        n_samples = int(np.ceil(np.round(duration.seconds * sample_rate.Hz, 6)))
+        time = time_min + np.arange(n_samples) / sample_rate.Hz
 
         # # convert radius to width / height
         # if "width" in self.scan_parameters:
@@ -327,7 +329,11 @@ class Plan:
 
     @property
     def dt(self):
-        return np.median(np.diff(self.coords.t))
+        # the mean step between consecutive samples (skipping gaps): single steps between absolute unix times are
+        # quantized to their float64 resolution (2.4e-7 s), so their median is off by up to 1e-4 at 1 kHz
+        steps = np.diff(self.coords.t)
+        median_step = np.median(steps)
+        return np.mean(steps[np.abs(steps - median_step) < 0.5 * median_step])
 
     @property
     def sample_rate(self):

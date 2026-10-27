@@ -186,3 +186,14 @@ def test_planner_run_to_the_end_of_the_lookahead():
     assert len(chunks) > 0
     assert all(chunk["duration"] <= 1800 for chunk in chunks)
     assert all(chunk["start_time"].timestamp() + chunk["duration"] <= T0 + 3600 for chunk in chunks)
+
+
+@pytest.mark.parametrize("duration, sample_rate", [(10, 7), (33.3, 20), (61.7, 50), (600, 100), (1800.5, 400)])
+def test_plan_time_grid_is_exact(duration, sample_rate):
+    """P-new3: np.arange on absolute unix time quantized the step (0.0025000572 s at 400 Hz, a 41 ms drift over
+    30 min) and sometimes gave one sample too many; Plan.sample_rate was off by the same amount."""
+    plan = stare(start_time=T0 + 0.37, duration=duration, sample_rate=sample_rate)
+
+    assert plan.n == int(np.ceil(duration * sample_rate - 1e-9))
+    assert np.abs(plan.time - (T0 + 0.37 + np.arange(plan.n) / sample_rate)).max() < 1e-6
+    assert np.isclose(plan.sample_rate.Hz, sample_rate, rtol=1e-7)
