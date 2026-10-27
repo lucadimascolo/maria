@@ -51,3 +51,23 @@ Non-white noise
 +++++++++++++++
 
 Bolometers are typically dominated by non-white noise below a certain frequency threshold (the "knee"). We can add in pink noise to our band by supplying a ``knee`` parameter (in Hz).
+
+
++++++++++++++++++++
+Correlated noise
++++++++++++++++++++
+
+A fraction of the pink noise is correlated between the detectors of a band. It is controlled by the
+``noise_kwargs`` of the ``Simulation``:
+
+.. code-block:: python
+
+    sim = Simulation(...,
+                     noise_kwargs={"correlated_noise_proportion": 0.5, # fraction of the pink noise power in correlated modes
+                                   "correlated_noise_spatial_scale": 1.0}) # correlation length, as a fraction of the band's field of view
+
+The correlated modes contain only pink noise: the white noise of every detector is independent. Bands with
+more than 16 detectors get five spatially smooth modes, and smaller bands get a single common mode.
+
+The noise (white, pink and correlated) is drawn from NumPy's global random state, so ``np.random.seed`` makes a
+simulation reproducible, and each call of ``run()`` gives a new realization.
