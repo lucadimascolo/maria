@@ -43,6 +43,8 @@ class Atmosphere:
         timestep: float = None,
         interpolation_method: str = "linear",
         disable_progress_bars: bool = False,
+        seasonal: bool = True,
+        diurnal: bool = True,
     ):
         if model not in SUPPORTED_MODELS_LIST:
             raise ValueError(
@@ -57,13 +59,16 @@ class Atmosphere:
             altitude=altitude,
             override=self.kwargs.get("weather", {}),
             quantiles=weather_quantiles,
+            seasonal=seasonal,
+            diurnal=diurnal,
             source=weather_source,
         )
 
         # the spectrum must be evaluated at the pressure level of the site, at the time of the observation
         self.spectrum = AtmosphericSpectrum.from_weather(self.weather)
 
-        self.pwv_rms_frac = pwv_rms_frac
+        # atmosphere_kwargs["layers"]["pwv_rms_frac"], if given, takes precedence over the argument
+        self.pwv_rms_frac = self.kwargs.get("layers", {}).get("pwv_rms_frac", pwv_rms_frac)
 
         self.angular = False
 
@@ -89,13 +94,18 @@ class Atmosphere:
             site=obs.site,
             mode=self.model,
             angular=self.angular,
-            **self.kwargs.get("layers", {}),
+            **{**self.kwargs.get("layers", {}), "pwv_rms_frac": self.pwv_rms_frac},
         )
 
         if self.timestep is None:
             min_fwhm = obs.instrument.dets.angular_fwhm(z=self.max_height).min()
             max_wind = Quantity((self.layers.wind_speed / self.layers.h).values, "rad/s").max()
-            self.timestep = max(1e-1, (min_fwhm / max_wind).s)
+            self.timestep = max(1e-1, (min_fwhm / max_wind).s) if max_wind > 0 else np.inf
+            # the atmosphere is upsampled with a cubic spline, which needs at least 4 samples: shorten the timestep only
+            # for observations that are too short for that, so that every other one keeps its timestep
+            duration = np.ptp(obs.boresight.t)
+            if duration <= 3 * self.timestep:
+                self.timestep = duration / 4
 
         # rotate the focal plane by the plan roll, as in Observation
         roll_matrix = get_rotation_matrix_2d(np.radians(obs.plan.roll)).T
