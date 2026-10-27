@@ -9,6 +9,7 @@ from astropy.coordinates import AltAz, SkyCoord
 from astropy.time import Time
 from maria import Planner
 from maria.coords import Frame
+from maria.instrument import get_instrument
 from maria.plan import PLAN_CONFIGS, Plan, get_plan
 from maria.plan.patterns import back_and_forth, double_circle, lissajous, parse_scan_kwargs
 from maria.plan.plan import parse_scan_parameters
@@ -93,3 +94,19 @@ def test_parse_scan_kwargs_does_not_mutate_its_input():
     scan_kwargs = {}
     parse_scan_kwargs(scan_kwargs, default_radius=2.0)
     assert scan_kwargs == {}
+
+
+def test_generate_with_instrument_and_no_sample_rate():
+    """P8: Plan.generate(instrument=..., sample_rate=None) crashed in np.arange."""
+    plan = stare(instrument="test/1deg", sample_rate=None)
+    assert np.isclose(plan.sample_rate.Hz, 100.0)
+    plan = stare(instrument=get_instrument("test/1deg"), sample_rate=None)
+    assert np.isclose(plan.sample_rate.Hz, 100.0)
+    assert plan.n == 1000
+    # as on master: without a sample rate, a name is looked up and other types raise
+    with pytest.raises(TypeError):
+        stare(instrument=1.0, sample_rate=None)
+    with pytest.raises(KeyError):
+        stare(instrument="not-an-instrument", sample_rate=None)
+    # as on master: with a sample rate, the instrument is not used
+    assert stare(instrument=1.0, sample_rate=10).n == 100

@@ -138,14 +138,14 @@ class Plan:
 
         infer_sample_rate = False
         if sample_rate is None:
-            if instrument is None:
-                logger.warning("No sample rate passed, assuming 100 Hz")
-                sample_rate = 100
-                infer_sample_rate = True
-            elif isinstance(instrument, str):
+            if isinstance(instrument, str):
                 instrument = get_instrument(instrument)
-            elif not isinstance(instrument, Instrument):
+            elif instrument is not None and not isinstance(instrument, Instrument):
                 raise TypeError()
+            # instruments do not define a sample rate, so the default is used with or without one
+            logger.warning("No sample rate passed, assuming 100 Hz")
+            sample_rate = 100
+            infer_sample_rate = True
 
         sample_rate = Quantity(sample_rate, "Hz")
 
