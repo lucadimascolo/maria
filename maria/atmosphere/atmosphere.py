@@ -374,52 +374,38 @@ class Atmosphere:
 
                     layer_mask = process.labels == layer_index
 
-                    beam_fwhm = (
-                        instrument.dets.physical_fwhm(
-                            layer.z,
-                        )
-                        .mean()
-                        .meters
-                        if instrument
-                        else 0
-                    )
-                    beam_sigma = beam_fwhm / 2.355
-                    extrusion_sigma = beam_sigma / process.extrusion_res
-                    x_sigma = beam_sigma / layer.res
-
-                    smoothed_layer_pwv = sp.ndimage.gaussian_filter(
-                        process.values[:, layer_mask],
-                        sigma=(extrusion_sigma, x_sigma),
-                    )
-
                     p = layer.h * pp + translation
                     transformed_lpp = p @ process.transform
 
-                    # NOT JAX because linear interpolations leads to weird jagged things in Fourier space
-                    # y = sp.interpolate.RegularGridInterpolator(
-                    #     (
-                    #         process.extrusion,
-                    #         process.cross_section[layer_mask, 0],
-                    #     ),
-                    #     smoothed_layer_pwv,
-                    #     method="cubic",
-                    # )(transformed_lpp[..., :2])
+                    # sample each group of detectors with the same beam (e.g. each band) from the layer smoothed with it
+                    det_fwhm = instrument.dets.physical_fwhm(layer.z).m if instrument else np.zeros(pp.shape[0])
+                    rounded_fwhm = np.round(det_fwhm, 9)
 
-                    y = jsp.interpolate.RegularGridInterpolator(
-                        (
-                            process.extrusion,
-                            process.cross_section[layer_mask, 0],
-                        ),
-                        smoothed_layer_pwv,
-                        method="linear",
-                    )(transformed_lpp[..., :2])
+                    for fwhm in np.unique(rounded_fwhm):
+                        group_mask = rounded_fwhm == fwhm
 
-                    if np.isnan(y).any():
-                        raise RuntimeError(f"Layer {layer_index} in process {k} introduced nans into PWV simulation.")
+                        beam_sigma = det_fwhm[group_mask].mean() / 2.355
+                        extrusion_sigma = beam_sigma / process.extrusion_res
+                        x_sigma = beam_sigma / layer.res
 
-                    # y = y
+                        smoothed_layer_pwv = sp.ndimage.gaussian_filter(
+                            process.values[:, layer_mask],
+                            sigma=(extrusion_sigma, x_sigma),
+                        )
 
-                    self.zenith_scaled_pwv += process.amplitude_correction * layer.pwv_rms * y
+                        y = jsp.interpolate.RegularGridInterpolator(
+                            (
+                                process.extrusion,
+                                process.cross_section[layer_mask, 0],
+                            ),
+                            smoothed_layer_pwv,
+                            method="linear",
+                        )(transformed_lpp[group_mask][..., :2])
+
+                        if np.isnan(y).any():
+                            raise RuntimeError(f"Layer {layer_index} in process {k} introduced nans into PWV simulation.")
+
+                        self.zenith_scaled_pwv[group_mask] += process.amplitude_correction * layer.pwv_rms * y
 
                     pbar.update(1)
 
