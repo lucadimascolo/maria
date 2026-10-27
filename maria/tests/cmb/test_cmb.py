@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import healpy as hp
 import maria
+import numpy as np
 import pytest
+from maria.cmb import generate_cmb, get_cmb_spectrum
 
 
 @pytest.mark.parametrize("nside", [256, 512, 1024])
@@ -35,3 +38,31 @@ def test_cmb_calibration():
 
     assert all(cmb_rms_uK > 80)
     assert all(cmb_rms_uK < 150)
+
+
+def test_generate_cmb_keeps_global_rng():
+    """generate_cmb must not reseed the global NumPy RNG, so later draws stay independent."""
+    np.random.seed(1)
+    expected = np.random.standard_normal(8)
+
+    np.random.seed(1)
+    generate_cmb(nside=32)
+    assert np.array_equal(np.random.standard_normal(8), expected)
+
+
+def test_generate_cmb_seed():
+    """The CMB realisation depends only on the seed, and the default one is unchanged."""
+    a = np.asarray(generate_cmb(nside=32, seed=7).data)
+    np.random.seed(99)
+    b = np.asarray(generate_cmb(nside=32, seed=7).data)
+    c = np.asarray(generate_cmb(nside=32, seed=8).data)
+    assert np.array_equal(a, b)
+    assert not np.array_equal(a, c)
+
+    # the default realisation is the one healpy draws after np.random.seed(123456)
+    cl = get_cmb_spectrum(source="lensed")
+    lmax = int(np.pi / hp.pixelfunc.nside2resol(32))
+    np.random.seed(123456)
+    alm = hp.synalm((cl.TT, cl.EE, cl.BB, cl.TE), lmax=lmax, new=True)
+    reference = hp.alm2map(alm, nside=32, lmax=lmax)
+    assert np.array_equal(np.asarray(generate_cmb(nside=32).data).reshape(3, -1), reference.astype(np.float32))
