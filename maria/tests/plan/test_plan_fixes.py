@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import copy
+
+import numpy as np
+import pytest
+from astropy import units as u
+from astropy.coordinates import AltAz, SkyCoord
+from astropy.time import Time
+from maria import Planner
+from maria.coords import Frame
+from maria.plan import PLAN_CONFIGS, Plan, get_plan
+from maria.plan.patterns import back_and_forth, double_circle, lissajous, parse_scan_kwargs
+from maria.plan.plan import parse_scan_parameters
+from maria.site import get_site
+from maria.units import Quantity
+
+T0 = 1.7e9
+
+
+def stare(start_time=T0, duration=10, sample_rate=10, **kwargs):
+    return Plan.generate(
+        start_time=start_time,
+        duration=duration,
+        sample_rate=sample_rate,
+        scan_type="stare",
+        frame="az/el",
+        scan_center=(10, 50),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("x_throw, y_throw", [(2.0, 0.0), (1.0, 0.5)])
+def test_back_and_forth_throw_and_speed(x_throw, y_throw):
+    """P6: back_and_forth scanned 1.099x wider and faster than requested."""
+    t = T0 + np.arange(0, 120, 1e-3)
+    speed = 0.5
+    x, y = back_and_forth(t, x_throw=x_throw, y_throw=y_throw, speed=speed).T
+
+    v = np.hypot(np.gradient(x, t), np.gradient(y, t))
+
+    assert np.isclose(np.abs(x).max(), x_throw, rtol=1e-3)
+    assert np.isclose(np.abs(y).max(), y_throw, rtol=1e-3, atol=1e-12)
+    assert np.isclose(v.max(), speed, rtol=1e-2)
+
+
+def test_back_and_forth_max_accel():
+    """P6: the acceleration limit was also exceeded by 1.099x."""
+    t = T0 + np.arange(0, 120, 1e-3)
+    max_accel = 0.2
+    x, y = back_and_forth(t, x_throw=2.0, speed=10.0, max_accel=max_accel).T
+
+    a = np.abs(np.gradient(np.gradient(x, t), t))
+
+    assert np.isclose(np.abs(x).max(), 2.0, rtol=1e-3)
+    assert np.isclose(a.max(), max_accel, rtol=1e-2)
+
+
+@pytest.mark.parametrize("pattern", [back_and_forth, lissajous, double_circle])
+def test_pattern_does_not_depend_on_start_time(pattern):
+    """P6: the phase was computed from the absolute unix time, so the start of the scan depended on the start time."""
+    t = np.arange(0, 60, 1e-2)
+    offsets = [pattern(t0 + t, x_throw=2.0, y_throw=1.0, speed=0.5) for t0 in [T0, T0 + 3.0, T0 + 1234.5]]
+
+    for o in offsets[1:]:
+        assert np.allclose(o, offsets[0], atol=1e-9)
