@@ -158,7 +158,9 @@ class Atmosphere:
                     self.boresight.shape[-1],
                 )
 
-            w = (process_layers.absolute_humidity * process_layers.temperature * process_layers.divergence).values
+            # weight each layer by its (non-negative) column of water vapor, so that the process wind is a mean of the
+            # layer winds; in 2d there is one layer per process, and the weights cancel
+            w = process_layers.total_water.values
             vx = (w[:, None] * vx).sum(axis=0) / w.sum()
             vy = (w[:, None] * vy).sum(axis=0) / w.sum()
             vz = np.zeros(vx.shape)
@@ -215,11 +217,23 @@ class Atmosphere:
             for i, (layer_index, layer) in enumerate(
                 self.layers.loc[in_process].iterrows(),
             ):
-                # this algorithm probably works
-                n_cross_section = int(np.maximum(2, (np.ptp(tp[:, 1]) + 2 * layer.res) / layer.res))
+                layer_min_ty, layer_max_ty = min_ty, max_ty
+
+                if self.model == "3d":
+                    # in 3d the hull is a strip that is tilted in (ty, tz), so each sublayer only needs the part of
+                    # the cross-section that is inside the hull at its height (and not the full width of the hull)
+                    dense_ty = np.linspace(min_ty, max_ty, 4096)
+                    query_tz = np.clip(layer.h, min_tz + 1e-3, max_tz - 1e-3)
+                    interior = triangulation.find_simplex(np.c_[dense_ty, np.full_like(dense_ty, query_tz)]) > -1
+                    if interior.any():
+                        dense_step = dense_ty[1] - dense_ty[0]
+                        layer_min_ty = max(min_ty, dense_ty[interior].min() - dense_step)
+                        layer_max_ty = min(max_ty, dense_ty[interior].max() + dense_step)
+
+                n_cross_section = int(np.maximum(2, (layer_max_ty - layer_min_ty + 2 * layer.res) / layer.res))
                 cross_section_points = np.stack(
                     [
-                        np.linspace(tp[:, 1].min() - layer.res, tp[:, 1].max() + layer.res, n_cross_section),
+                        np.linspace(layer_min_ty - layer.res, layer_max_ty + layer.res, n_cross_section),
                         layer.h * np.ones(n_cross_section),
                     ]
                 ).T
@@ -272,6 +286,17 @@ class Atmosphere:
             process.vx = vx
             process.vy = vy
             process.tp = tp
+
+            # the 3d sublayers are one correlated field, so summing them also sums their covariances: rescale them so
+            # that the PWV variance along the line of sight is the sum of the layer variances (as in 2d)
+            process.amplitude_correction = 1.0
+            if len(process.layers) > 1:
+                a = process.layers.pwv_rms.values
+                h = process.layers.h.values
+                los_distance = np.abs(h[:, None] - h[None, :]) / np.sin(self.boresight.el.mean())
+                C = approximate_normalized_matern(los_distance.ravel(), **matern_kwargs).reshape(los_distance.shape)
+                if a @ C @ a > 0:  # all the sublayers have zero amplitude when pwv_rms_frac=0
+                    process.amplitude_correction = float(np.sqrt((a @ a) / (a @ C @ a)))
 
             success = False
             for jitter in [1e-8, 1e-6, 1e-4]:
@@ -380,7 +405,7 @@ class Atmosphere:
 
                     # y = y
 
-                    self.zenith_scaled_pwv += layer.pwv_rms * y
+                    self.zenith_scaled_pwv += process.amplitude_correction * layer.pwv_rms * y
 
                     pbar.update(1)
 
