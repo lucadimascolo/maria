@@ -47,6 +47,14 @@ all_plans = list(plan_data.index.values)
 
 
 def parse_scan_parameters(parameters):
+    """
+    Split scan parameters into the kwargs of the plan (frame, center, offsets) and those of the scan pattern.
+
+    The frame is inferred from the names of the parameters (e.g. 'az_center' -> 'az/el'), and parameters in different
+    frames raise a ValueError. With 'radius', the pattern is made of offsets on the sky and 'speed' is an on-sky speed.
+    With '<lon>_throw'/'<lat>_throw' (e.g. 'az_throw'), the pattern is added to the coordinates themselves, and 'speed' is
+    the rate of change of the coordinate: for 'az_throw', the on-sky speed is speed * cos(el).
+    """
 
     params = parameters.copy()
 
@@ -65,10 +73,10 @@ def parse_scan_parameters(parameters):
             for frame, entry in frames.T.iterrows():
                 key = f"{entry[coord]}_{spec}"
                 if key in params:
-                    if scan_pattern_kwargs.get("frame", frame) == frame:
+                    if params.get("frame", frame) == frame:
                         params["frame"] = frame
                     else:
-                        raise ValueError("Multiple frames!")
+                        raise ValueError(f"Scan parameters in multiple frames ({params['frame']!r} and {frame!r}).")
                     params[f"{dim}_{spec}"] = params.pop(key)
 
                     if spec == "throw":
@@ -132,6 +140,11 @@ class Plan:
             # warnings.warn("deprecated", DeprecationWarning)
 
             frame = Frame(frame)
+
+            # an explicit scan center replaces any center in the scan parameters (e.g. from a plan config)
+            for _, entry in frames.T.iterrows():
+                for coord in ["phi", "theta"]:
+                    scan_parameters.pop(f"{entry[coord]}_center", None)
 
             scan_parameters[f"{frame.phi['name']}_center"] = scan_center[0]
             scan_parameters[f"{frame.theta['name']}_center"] = scan_center[1]
