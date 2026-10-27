@@ -176,8 +176,8 @@ class ProjectionMap(Map):
             header[f"NAXIS{dim_index + 1}"] = n
 
         header["BUNIT"] = self.units
-        header["BMAJOR"] = averaged_beam[0].degrees.item()
-        header["BMINOR"] = averaged_beam[1].degrees.item()
+        header["BMAJ"] = averaged_beam[0].degrees.item()
+        header["BMIN"] = averaged_beam[1].degrees.item()
         header["BPA"] = averaged_beam[2].degrees.item()
 
         CTYPE1 = self.frame.fits_phi
@@ -201,7 +201,8 @@ class ProjectionMap(Map):
             units = FITS_DEFAULT_UNITS[dim]
 
             if dim == "stokes":
-                dim_values = np.array(["IQUV".index(s) for s in dim_values])
+                # the FITS Stokes codes are I = 1, Q = 2, U = 3, V = 4
+                dim_values = np.array(["IQUV".index(s) + 1 for s in dim_values])
 
             if units:
                 dim_values = dim_values.to(units)
@@ -212,12 +213,12 @@ class ProjectionMap(Map):
                 if not grad.std() / np.abs(delt) < 1e-6:
                     raise RuntimeError("Cannot write irregular maps to FITS")
             else:
-                grad = getattr(self, dim)[0]
-                delt = 0.0
+                delt = 1.0  # any non-zero value, so that the WCS matrix is not singular
 
+            # CRVAL is the value at the first pixel, which is pixel 1 in FITS
             header[f"CTYPE{AXIS}"] = FITS_TYPE_ALIASES[dim][0]
             header[f"CRVAL{AXIS}"] = dim_values[0]
-            header[f"CRPIX{AXIS}"] = 0
+            header[f"CRPIX{AXIS}"] = 1
             header[f"CDELT{AXIS}"] = delt
             header[f"CUNIT{AXIS}"] = units
 
@@ -752,12 +753,14 @@ class ProjectionMap(Map):
         # if self.dims.get("nu", 0) > 1:
         #     logger.warning("Writing a multifrequency maps ")
 
-        fits.writeto(
-            filename=path,
-            data=self.data,
-            header=self.header(),
-            overwrite=True,
-        )
+        header = self.header()
+        hdus = [fits.PrimaryHDU(data=np.asarray(self.data), header=header)]
+
+        # the weight (if any) goes in a second image extension with the same WCS
+        if self._weight is not None:
+            hdus.append(fits.ImageHDU(data=np.asarray(self._weight), header=header, name="WEIGHT"))
+
+        fits.HDUList(hdus).writeto(path, overwrite=True)
 
     def to_hdf(self, filename: str, compress: bool = True):
         compression_kwargs = {"compression": "gzip", "compression_opts": 9} if compress else {}

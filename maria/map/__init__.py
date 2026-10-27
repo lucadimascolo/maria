@@ -67,7 +67,10 @@ def load(filename: str, index: int = None, format: str = "auto", **map_kwargs) -
 
     if format == "fits":
         data, axis_mask, kwargs, header = read_fits_map(filename, index=index, strict=False)
-        data = np.squeeze(data, tuple([i for i in range(data.ndim) if not axis_mask[i]]))
+        squeezed_axes = tuple([i for i in range(data.ndim) if not axis_mask[i]])
+        data = np.squeeze(data, squeezed_axes)
+        if "weight" in kwargs:
+            kwargs["weight"] = np.squeeze(kwargs["weight"], squeezed_axes)
     elif format == "h5":
         data, kwargs = read_hdf_map(filename)
     else:
