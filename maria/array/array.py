@@ -114,7 +114,9 @@ class Array:
         self.name = name  # or str(uuid.uuid4())
         self.dets = dets
         self.dets.index = np.arange(len(self.dets.index))
-        self.dets.loc[:, "array_name"] = self.name
+        # a combined array (name "") keeps the array names of its detectors
+        if self.name or ("array_name" not in self.dets.columns):
+            self.dets.loc[:, "array_name"] = self.name or ""
 
         self.bands = BandList([band for band in bands if band.name in self.dets.band_name.values])
         self.config = config
