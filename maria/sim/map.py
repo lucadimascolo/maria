@@ -158,9 +158,13 @@ class MapMixin:
                     calibration_s = ttime.monotonic()
 
                     if hasattr(obs, "atmosphere"):
+                        # channel edges inside the band are added to the grid, so that adjacent channels partition it
                         nu = obs.atmosphere.spectrum.side_nu.Hz
-                        channel_nu_mask = (nu >= nu_min) & (nu <= nu_max)
-                        channel_nu = nu[channel_nu_mask]
+                        channel_edges = [x for x in (nu_min, nu_max) if band.nu.Hz.min() < x < band.nu.Hz.max()]
+                        channel_nu = np.unique([*nu[(nu >= nu_min) & (nu <= nu_max)], *channel_edges])
+                        channel_opacity = sp.interpolate.interp1d(nu, obs.atmosphere.spectrum.fields["opacity"], axis=-1)(
+                            channel_nu
+                        )
 
                         instrument_transmission = band.passband(channel_nu)
 
@@ -172,11 +176,9 @@ class MapMixin:
 
                         static_transmission = instrument_transmission * static_atmospheric_transmission
 
-                        f_grid = (
-                            instrument_transmission
-                            * np.exp(-obs.atmosphere.spectrum.fields["opacity"][..., channel_nu_mask])
-                            * static_transmission
-                        ).sum(axis=-1) / (static_transmission**2).sum(axis=-1)
+                        f_grid = (instrument_transmission * np.exp(-channel_opacity) * static_transmission).sum(axis=-1) / (
+                            static_transmission**2
+                        ).sum(axis=-1)
 
                         xi = (
                             obs.atmosphere.weather.effective_temperature.K,
@@ -189,7 +191,8 @@ class MapMixin:
                         )(xi)
 
                     else:
-                        channel_nu = np.linspace(band.nu.Hz.min(), band.nu.Hz.max(), 100)
+                        # integrate over the part of the band that falls in this channel
+                        channel_nu = np.linspace(nu_min, nu_max, 100)
                         static_atmospheric_transmission = np.zeros_like(channel_nu)
 
                         static_transmission = band.passband(channel_nu)
