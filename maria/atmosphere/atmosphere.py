@@ -138,10 +138,11 @@ class Atmosphere:
                     - process_layers.wind_east.values[:, None] * np.sin(self.boresight.az)
                 ) / (process_layers.h.values[:, None] * np.sin(self.boresight.el))
             else:
-                vx = process_layers.wind_east.values[:, None] * np.ones(
+                # the process frame is that of Coordinates.project(), where x points north and y points east
+                vx = process_layers.wind_north.values[:, None] * np.ones(
                     self.boresight.shape[-1],
                 )
-                vy = process_layers.wind_north.values[:, None] * np.ones(
+                vy = process_layers.wind_east.values[:, None] * np.ones(
                     self.boresight.shape[-1],
                 )
 
@@ -166,16 +167,12 @@ class Atmosphere:
                     )
 
                 else:
+                    # the screen is static in the process frame, so for it to drift downwind (along +v)
+                    # the sampling points must move upwind (along -v)
                     p = outer_coords.project(z=layer.h)
-                    p += np.cumsum(self.timestep * np.c_[vx, vy, vz][None], axis=-2)
+                    p -= np.cumsum(self.timestep * np.c_[vx, vy, vz][None], axis=-2)
 
                     process_points_for_hull_list.append(p[None])
-
-                    layer_x = layer.z * np.sin(outer_coords.az) * np.cos(outer_coords.el)
-                    layer_y = layer.z * np.cos(outer_coords.az) * np.cos(outer_coords.el)
-
-                layer_x += np.cumsum(self.timestep * vx)
-                layer_y += np.cumsum(self.timestep * vy)
 
             process_points_for_hull = np.concatenate(
                 process_points_for_hull_list,
@@ -316,7 +313,8 @@ class Atmosphere:
         ) as pbar:
             for k, process in self.processes.items():
                 wind_vector = np.c_[process.vx, process.vy, np.zeros(process.vx.shape)]
-                translation = np.cumsum(self.timestep * wind_vector[None], axis=-2)
+                # sampling points move upwind, so that the screen drifts downwind (see initialize)
+                translation = -np.cumsum(self.timestep * wind_vector[None], axis=-2)
 
                 for i, (layer_index, layer) in enumerate(
                     process.layers.iterrows(),
