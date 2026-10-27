@@ -146,3 +146,43 @@ def test_scan_parameters_in_different_frames_raise():
     scan_kwargs, _ = parse_scan_parameters({"az_center": 0, "el_center": 60, "az_throw": 1})
     assert scan_kwargs["frame"] == "az/el"
     assert not scan_kwargs["offsets"]
+
+
+class PlannerTarget:
+    def __init__(self, ra, dec):
+        self.center = (Quantity(ra, "deg"), Quantity(dec, "deg"))
+        self.frame = Frame("ra/dec")
+        self.width = Quantity(1.0, "deg")
+
+
+@pytest.mark.parametrize("ra", [0.0, 315.0])
+def test_planner_chunks_satisfy_the_elevation_constraint(ra):
+    """P12: a chunk ending at the end of a run extended to the first test point that fails the constraints (up to
+    112.5 s and 0.28 deg below the elevation limit here)."""
+    el_min, dec = 60.0, 0.0
+    site = get_site("cerro_toco")
+    planner = Planner(target=PlannerTarget(ra, dec), site=site, constraints={"el": (el_min, 90)}, start_time=T0)
+    chunks = planner.generate_obs_intervals(total_duration=6 * 3600, max_chunk_duration=1800)
+    assert len(chunks) > 0
+
+    for chunk in chunks:
+        t = chunk["start_time"].timestamp() + np.arange(0, float(chunk["duration"]) + 1e-9, 10.0)
+        frame = AltAz(obstime=Time(t, format="unix"), location=site.earth_location, pressure=0 * u.hPa)
+        el = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs").transform_to(frame).alt.deg
+        assert el.min() > el_min - 0.01, f"chunk at {chunk['start_time']} reaches el = {el.min():.3f} deg"
+
+
+def test_planner_run_to_the_end_of_the_lookahead():
+    """P12: when the constraints held up to the end of the lookahead, the planner indexed past the end."""
+    planner = Planner(
+        target=PlannerTarget(0.0, -89.0),
+        site="amundsen_scott",
+        constraints={"el": (30, 90)},
+        max_lookahead=3600,
+        start_time=T0,
+    )
+    chunks = planner.generate_obs_intervals(total_duration=7200, max_chunk_duration=1800)
+
+    assert len(chunks) > 0
+    assert all(chunk["duration"] <= 1800 for chunk in chunks)
+    assert all(chunk["start_time"].timestamp() + chunk["duration"] <= T0 + 3600 for chunk in chunks)
