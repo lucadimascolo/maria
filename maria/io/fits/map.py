@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import warnings
 
 import numpy as np
 from astropy.io import fits
 from astropy.io.fits.header import Header
+from astropy.wcs import WCS, FITSFixedWarning
 
 from ...units import Quantity, parse_units
 
@@ -79,6 +81,28 @@ def read_fits_map(path: str, index: int | None = None, strict: bool = True):
     return data, axis_mask, kwargs, header
 
 
+def _compute_fits_map_center(header, xi_axis: int, eta_axis: int, default):
+    """
+    The sky position of the centre of the image (0-based pixel ((NAXIS - 1) / 2) on each spatial axis).
+    This is used for projections other than maria's own (ARC), where CRVAL can be far from the map.
+    """
+    pixel_center = [(header[f"NAXIS{axis}"] - 1) / 2 for axis in (xi_axis, eta_axis)]
+    reference_pixel = [header.get(f"CRPIX{axis}", 1.0) - 1 for axis in (xi_axis, eta_axis)]
+
+    if np.allclose(pixel_center, reference_pixel):
+        return default
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FITSFixedWarning)
+            phi, theta = WCS(header, naxis=[xi_axis, eta_axis]).wcs_pix2world([pixel_center], 0)[0]
+    except Exception as e:
+        logger.warning(f"Could not compute the map center from the WCS ({e}), using CRVAL.")
+        return default
+
+    return [float(phi), float(theta)]
+
+
 def parse_fits_map_header(header):
 
     parity = {}
@@ -88,6 +112,8 @@ def parse_fits_map_header(header):
     axis_mask = np.zeros(header["NAXIS"], dtype=bool)
 
     center = [0, 0]
+    spatial_axes = {}
+    spatial_offsets = {}
     for axis in range(header["NAXIS"]):
         parity = 1
 
@@ -141,11 +167,27 @@ def parse_fits_map_header(header):
 
         if dim in ["xi", "eta"]:
             kwargs[f"{dim}_res"] = CDELT
+            # the offsets from CRVAL, which is at the (1-based) reference pixel CRPIX
+            spatial_offsets[dim] = CDELT * (np.arange(NAXIS, dtype=float) - (CRPIX - 1))
             center[["xi", "eta"].index(dim)] = CRVAL
+            spatial_axes[dim] = AXIS
         else:
             axis_values = CDELT * np.arange(NAXIS, dtype=float)
             axis_values += CRVAL - np.interp(CRPIX, np.arange(NAXIS), axis_values)
             axes[dim] = Quantity(axis_values, CUNIT)
+
+    # CRVAL is the sky position of the reference pixel CRPIX, which need not be the middle of the image
+    if len(spatial_axes) == 2:
+        projections = {str(header[f"CTYPE{AXIS}"])[5:8] for AXIS in spatial_axes.values()}
+        if projections == {"ARC"}:
+            # maria's projection (ARC) about CRVAL, with the offsets counted from CRPIX, is exact wherever CRPIX is
+            for dim in ["xi", "eta"]:
+                kwargs[dim] = spatial_offsets[dim]
+                kwargs.pop(f"{dim}_res")
+        else:
+            # other projections (TAN, SIN, CAR, ...) differ from ARC away from CRVAL, which can be far from the map:
+            # center the map on the sky position of its middle pixel
+            center = _compute_fits_map_center(header, spatial_axes["xi"], spatial_axes["eta"], default=center)
 
     for key, value in header.items():
         for kwarg, aliases in FITS_KWARG_ALIASES.items():
