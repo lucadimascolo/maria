@@ -385,25 +385,27 @@ class Map:
         return (b[0], b[1], b[2])
 
     def to_obs_frame(self):
+        """
+        Fold a single redshift (or radial velocity) into the frequency axis: the map loses its z (or v) dimension
+        and its rest-frame frequencies become the observed ones, nu / (1 + z).
+        """
 
-        package = self.package()
-
-        if "nu" not in package:
+        if "nu" not in self.dims:
             return self
 
-        for dim_index, (dim, n) in enumerate(self.dims.items()):
-            if (dim in ["nu", "v", "z"]) and (n == 1):
-                package["data"] = np.squeeze(package["data"], axis=dim_index)
+        z, m = 0.0, self
+        if "z" in self.dims:
+            if self.dims["z"] > 1:
+                raise NotImplementedError("Cannot move a map with more than one redshift to the observer frame.")
+            z, m = float(np.squeeze(self.z)), self.squeeze("z")
+        elif "v" in self.dims:
+            if self.dims["v"] > 1:
+                raise NotImplementedError("Cannot move a map with more than one velocity to the observer frame.")
+            beta = float(np.squeeze(self.v.to("m/s"))) / c
+            z, m = np.sqrt((1 + beta) / (1 - beta)) - 1, self.squeeze("v")
 
-            if dim == "z":
-                z = package.pop("z")
-            elif dim == "v":
-                v = package.pop("v")
-                numer = np.sqrt(1 + v / Quantity(c, "m/s"))
-                denom = np.sqrt(1 - v / Quantity(c, "m/s"))
-                z = numer / denom - 1
-
-        package["nu"] = package.pop("nu") * (1 + z)
+        package = m.package()
+        package["nu"] = m.nu.Hz / (1 + z)
 
         return type(self)(**package)
 
@@ -570,11 +572,15 @@ class Map:
                 package[dim] = package[dim][explicit_slices[axis]]
 
         if "xi" in self.dims:
-            xi_res_factor = explicit_slices[-1].step or 1.0
-            eta_res_factor = explicit_slices[-2].step or 1.0
+            xi_res_factor = abs(explicit_slices[-1].step or 1.0)
+            eta_res_factor = abs(explicit_slices[-2].step or 1.0)
 
-            # downsampling changes the pixel area, so we might have to adjust
-            package["data"] *= (xi_res_factor * eta_res_factor) ** parse_units(self.units)["dimension_vector"].pixel
+            # downsampling changes the pixel area, so we might have to adjust (e.g. Jy/pixel scales with the area)
+            pixel_area_factor = (xi_res_factor * eta_res_factor) ** -parse_units(self.units)["dimension_vector"].pixel
+            package["data"] *= pixel_area_factor
+            if self._weight is not None:
+                # an inverse-variance weight goes as the inverse square of the data
+                package["weight"] = package["weight"] * pixel_area_factor**-2
 
         # if "pixel" in self.dims:
 

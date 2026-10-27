@@ -358,16 +358,20 @@ class ProjectionMap(Map):
         c = Coordinates(other_phi_theta[..., 0], other_phi_theta[..., 1], frame=other_map.frame)
 
         offsets = c.offsets(center=self.center, frame=self.frame)
-        interpolator = sp.interpolate.RegularGridInterpolator(
-            (self.eta.rad, self.xi.rad), np.moveaxis(self.data, (-2, -1), (0, 1)).compute(), bounds_error=False
-        )
 
-        new_values = np.moveaxis(interpolator((offsets[..., 1], offsets[..., 0])), (0, 1), (-2, -1))
+        def interpolate(values):
+            interpolator = sp.interpolate.RegularGridInterpolator(
+                (self.eta.rad, self.xi.rad), np.moveaxis(values, (-2, -1), (0, 1)).compute(), bounds_error=False
+            )
+            return np.moveaxis(interpolator((offsets[..., 1], offsets[..., 0])), (0, 1), (-2, -1))
 
+        # the new map is on the other map's grid, so it is in the other map's frame
         return type(self)(
-            new_values,
+            interpolate(self.data),
+            weight=interpolate(self._weight) if self._weight is not None else None,
             units=self.units,
             center=other_map.center,
+            frame=other_map.frame.name,
             **{dim: (getattr(other_map, dim) if dim in ["xi", "eta"] else getattr(self, dim)) for dim in self.dims},
             beam=self.beam,
         )
@@ -416,19 +420,28 @@ class ProjectionMap(Map):
             dims_to_average.append(2 * dim_index + 1)
             trimming_slices.append(dim_trim_slice)
 
-        if self._weight is not None:
-            reduced_data = np.nanmean(self.data[tuple(trimming_slices)].reshape(reduction_shape), dims_to_average)
-        else:
-            reduced_numer = np.nansum(
-                (self.data * self.weight)[tuple(trimming_slices)].reshape(reduction_shape), dims_to_average
-            )
-            reduced_denom = np.nansum(self.weight[tuple(trimming_slices)].reshape(reduction_shape), dims_to_average)
-            reduced_data = reduced_numer / reduced_denom
+        data = self.data[tuple(trimming_slices)].reshape(reduction_shape)
+        weight = self.weight[tuple(trimming_slices)].reshape(reduction_shape)
+        # pixels without data do not count (also in an unweighted map, whose weights are all one)
+        weight = np.where(np.isfinite(data), weight, 0)
+
+        # the weighted mean (the plain mean for an unweighted map, whose weights are all one)
+        reduced_weight = np.nansum(weight, dims_to_average)
+        reduced_data = np.nansum(data * weight, dims_to_average) / reduced_weight
 
         pixel_area_reduction = np.prod([explicit_reduction[dim] for dim in ["xi", "eta"]])
-        reduced_data *= pixel_area_reduction ** -parse_units(self.units)["dimension_vector"]["pixel"]
+        pixel_area_factor = pixel_area_reduction ** -parse_units(self.units)["dimension_vector"]["pixel"]
+        reduced_data *= pixel_area_factor
 
-        return type(self)(data=reduced_data, center=self.center, units=self.units, **new_dims, beam=self.beam)
+        return type(self)(
+            data=reduced_data,
+            weight=reduced_weight * pixel_area_factor**-2 if self._weight is not None else None,
+            center=self.center,
+            frame=self.frame.name,
+            units=self.units,
+            **new_dims,
+            beam=self.beam,
+        )
 
     def zero_pad(self):
 
