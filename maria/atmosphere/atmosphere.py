@@ -16,7 +16,7 @@ from ..instrument import Instrument
 from ..io import DEFAULT_BAR_FORMAT, humanize_time
 from ..spectrum import AtmosphericSpectrum
 from ..units import Quantity
-from ..utils import compute_aligning_transform
+from ..utils import compute_aligning_transform, get_rotation_matrix_2d
 from ..weather import Weather
 from .extrusion import generate_layers
 from .process import AutoregressiveProcess
@@ -97,15 +97,18 @@ class Atmosphere:
             max_wind = Quantity((self.layers.wind_speed / self.layers.h).values, "rad/s").max()
             self.timestep = max(1e-1, (min_fwhm / max_wind).s)
 
+        # rotate the focal plane by the plan roll, as in Observation
+        roll_matrix = get_rotation_matrix_2d(np.radians(obs.plan.roll)).T
+
         self.boresight = obs.boresight.downsample(timestep=self.timestep)
         self.coords = self.boresight.broadcast(
-            obs.instrument.dets.offsets,
+            obs.instrument.dets.offsets @ roll_matrix,
             frame="az/el",
         )
 
         # this is a smaller version of the sim coords
         outer_coords = self.boresight.broadcast(
-            obs.instrument.dets.outer().offsets,
+            obs.instrument.dets.outer().offsets @ roll_matrix,
             frame="az/el",
         )
 
