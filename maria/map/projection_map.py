@@ -181,16 +181,16 @@ class ProjectionMap(Map):
         header["BPA"] = averaged_beam[2].degrees.item()
 
         CTYPE1 = self.frame.fits_phi
-        header["CTYPE1"] = f"{CTYPE1}{(5 - len(CTYPE1)) * '-'}TAN"
+        header["CTYPE1"] = f"{CTYPE1}{(5 - len(CTYPE1)) * '-'}ARC"  # maria maps are zenithal equidistant
         header["CRVAL1"] = self.center[0].deg
-        header["CRPIX1"] = self.xi.size // 2
+        header["CRPIX1"] = (self.xi.size + 1) / 2  # the map centre, in 1-based FITS pixels
         header["CDELT1"] = -self.xi_res.deg  # longitude goes the other way
         header["CUNIT1"] = "deg"
 
         CTYPE2 = self.frame.fits_theta
-        header["CTYPE2"] = f"{CTYPE2}{(5 - len(CTYPE2)) * '-'}TAN"
+        header["CTYPE2"] = f"{CTYPE2}{(5 - len(CTYPE2)) * '-'}ARC"
         header["CRVAL2"] = self.center[1].deg
-        header["CRPIX2"] = self.eta.size // 2
+        header["CRPIX2"] = (self.eta.size + 1) / 2
         header["CDELT2"] = self.eta_res.deg
         header["CUNIT2"] = "deg"
 
