@@ -12,15 +12,19 @@ from maria.mapping import MaximumLikelihoodMapper
 here, this_filename = os.path.split(__file__)
 
 
+# a fixed draw and a fixed date, so that the test does not depend on the run (e.g. the summer weather at some
+# sites is outside the atmospheric spectrum tables)
+START_TIME = "2026-01-15T12:00:00+00:00"
+rng = np.random.default_rng(seed=0)
 n_sims = 10
-test_sites = np.random.choice(a=all_sites, size=n_sims)
-test_az = np.random.uniform(low=0, high=360, size=n_sims)
-test_el = np.random.uniform(low=30, high=90, size=n_sims)
+test_sites = rng.choice(a=all_sites, size=n_sims)
+test_az = rng.uniform(low=0, high=360, size=n_sims)
+test_el = rng.uniform(low=30, high=90, size=n_sims)
 
 
 @pytest.mark.parametrize(
     "instrument,site,az,el",
-    zip(np.random.choice(test_instruments, size=n_sims), test_sites, test_az, test_el),
+    zip(rng.choice(test_instruments, size=n_sims), test_sites, test_az, test_el),
 )
 def test_pipeline(instrument, site, az, el):
     site = maria.get_site(site)
@@ -32,6 +36,7 @@ def test_pipeline(instrument, site, az, el):
         sample_rate=15,  # in Hz
         scan_center=(az, el),
         frame="az/el",
+        start_time=START_TIME,
     )
 
     sim = Simulation(
