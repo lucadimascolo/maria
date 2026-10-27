@@ -4,9 +4,10 @@ import os
 
 import healpy as hp
 import numpy as np
+from astropy.io import fits
 
 from ..constants import z_CMB
-from ..io import fetch, get_local_cache_dir
+from ..io import fetch
 from ..map import HEALPixMap
 
 CMB_SPECTRUM_SOURCE_URL = (
@@ -27,23 +28,47 @@ CMB_SOURCES = {
 }
 
 
-def get_cmb(**kwargs):
-    cmb_path = fetch(source_url=CMB_MAP_SOURCE_URL, cache_path=f"{get_local_cache_dir()}/maps/planck_cmb.fits")
+def _find_healpix_columns(path):
+    """
+    The (hdu, column) of the Stokes I, Q and U maps in a HEALPix FITS file, found by column name (the Planck CMB
+    file has the temperature and the polarization in separate extensions), or else the first three columns of the
+    first table.
+    """
+    prefixes = {"I": ("TEMPERATURE", "I"), "Q": ("Q_",), "U": ("U_",)}
+    with fits.open(path) as hdul:
+        tables = [(i, hdu.columns.names) for i, hdu in enumerate(hdul) if isinstance(hdu, fits.BinTableHDU)]
 
-    field_dtypes = {
-        "T": np.float32,
-        "Q": np.float32,
-        "U": np.float32,
-        "T_mask": bool,
-        "P_mask": bool,
-    }
+    columns = {}
+    for hdu_index, names in tables:
+        for column_index, name in enumerate(names):
+            for stokes, stokes_prefixes in prefixes.items():
+                if stokes not in columns and name.upper().startswith(stokes_prefixes):
+                    columns[stokes] = (hdu_index, column_index)
 
-    maps = {
-        field: hp.fitsfunc.read_map(cmb_path, field=i).astype(dtype) for i, (field, dtype) in enumerate(field_dtypes.items())
-    }
+    if len(columns) < 3:
+        return [(tables[0][0], column_index) for column_index in range(3)]
+    return [columns[stokes] for stokes in "IQU"]
 
-    maps["T"] = np.where(maps["T_mask"], maps["T"], np.nan)
-    maps["Q"] = np.where(maps["P_mask"], maps["Q"], np.nan)
-    maps["U"] = np.where(maps["P_mask"], maps["U"], np.nan)
 
-    return HEALPixMap(data=np.stack([maps["T"], maps["Q"], maps["U"]], axis=0)[:, None, None], stokes="IQU", z=z_CMB)
+def get_cmb(nside: int = None, **kwargs):
+    """
+    The Planck CMB map, in K_CMB and galactic coordinates, degraded to `nside` (by default, to the coarsest
+    resolution of its I, Q and U maps). The map contains the solar dipole (about 3.4 mK).
+    """
+    cmb_path = fetch(url=CMB_MAP_SOURCE_URL, max_age=CMB_MAP_CACHE_MAX_AGE)
+
+    maps = [
+        hp.fitsfunc.read_map(cmb_path, hdu=hdu, field=column, dtype=np.float32)
+        for hdu, column in _find_healpix_columns(cmb_path)
+    ]
+
+    nside = nside or min(hp.npix2nside(m.size) for m in maps)
+    data = np.stack([m if hp.npix2nside(m.size) == nside else hp.ud_grade(m, nside_out=nside) for m in maps], axis=0)
+
+    return HEALPixMap(
+        data=data[:, None, None],
+        stokes="IQU",
+        units="K_CMB",
+        frame="galactic",
+        z=z_CMB,
+    )
