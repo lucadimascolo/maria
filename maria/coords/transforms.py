@@ -24,8 +24,14 @@ def unjitted_offsets_to_phi_theta(dX, cphi, ctheta, xp=jnp):
         1j * (ctheta - xp.pi / 2),
     )
 
+    # the latitude is computed with arctan2 and not arcsin, which is ill-conditioned near the poles (in float32,
+    # arcsin is off by up to 71 arcseconds within half a degree of the zenith)
+    proj_y = xp.sin(r) * xp.sin(p)
     return xp.stack(
-        [xp.arctan2(xp.sin(r) * xp.sin(p), xp.real(proj_from_east)) + cphi, xp.arcsin(xp.imag(proj_from_east))],
+        [
+            xp.arctan2(proj_y, xp.real(proj_from_east)) + cphi,
+            xp.arctan2(xp.imag(proj_from_east), xp.hypot(proj_y, xp.real(proj_from_east))),
+        ],
         axis=-1,
     )
 
@@ -72,8 +78,9 @@ def xyz_to_phi_theta(xyz):
     """
     Find the longitude and latitude of a 3-vector.
     """
-    return jnp.arctan2(xyz[..., 1], xyz[..., 0]) % (2 * jnp.pi), jnp.arcsin(
-        xyz[..., 2] / jnp.sqrt(jnp.sum(xyz**2, axis=-1)),
+    return jnp.arctan2(xyz[..., 1], xyz[..., 0]) % (2 * jnp.pi), jnp.arctan2(
+        xyz[..., 2],
+        jnp.hypot(xyz[..., 0], xyz[..., 1]),
     )
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from astropy import units as u
-from astropy.coordinates import AltAz, SkyCoord, angular_separation
+from astropy.coordinates import AltAz, SkyCoord, angular_separation, offset_by
 from astropy.time import Time
 from maria.coords import Coordinates, offsets_to_phi_theta
 from maria.site import get_site
@@ -125,3 +125,24 @@ def test_wide_scan_matches_astropy():
         part = boresight(t[s], az[s], 45.0).broadcast(grid_offsets(n=3))
         err = separation_arcsec(part.ra, part.dec, full.ra[:, s], full.dec[:, s])
         assert err.max() < 0.5, f"max difference {err.max():.3f} arcsec"
+
+
+@pytest.mark.parametrize("el", [60.0, 89.0, 89.9, 90.0])
+def test_offsets_near_zenith(el):
+    """P3: latitudes from a float32 arcsin are wrong by up to 71" within ~0.5 deg of the zenith or pole."""
+    offsets = grid_offsets(n=21, spacing_deg=0.1)
+    caz, cel = np.radians(30.0), np.radians(el)
+
+    phi_theta = np.asarray(offsets_to_phi_theta(offsets, caz, cel), dtype=np.float64)
+
+    # maria's offsets: x = -r sin(pa), y = r cos(pa), with pa the position angle (east of north)
+    true_phi, true_theta = offset_by(
+        lon=caz * u.rad,
+        lat=cel * u.rad,
+        posang=np.arctan2(-offsets[:, 0], offsets[:, 1]) * u.rad,
+        distance=np.hypot(offsets[:, 0], offsets[:, 1]) * u.rad,
+    )
+    err = separation_arcsec(phi_theta[:, 0], phi_theta[:, 1], true_phi.rad, true_theta.rad)
+
+    assert err.max() < 0.1, f"max error {err.max():.3f} arcsec"
+    assert (phi_theta[:, 1] <= np.float32(np.pi / 2)).all()
