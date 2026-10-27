@@ -134,3 +134,15 @@ def test_add_plans_keeps_roll_and_location():
 
     with pytest.raises(ValueError):
         a + stare(start_time=T0 + 20, roll=10.0, site="cerro_toco")
+
+
+def test_scan_parameters_in_different_frames_raise():
+    """P10: the frame-conflict guard checked the wrong dict and never fired (az_center + ra_throw was accepted)."""
+    with pytest.raises(ValueError):
+        parse_scan_parameters({"az_center": 0, "el_center": 60, "ra_throw": 1})
+    with pytest.raises(ValueError):
+        parse_scan_parameters({"ra_center": 150, "el_center": 60})
+
+    scan_kwargs, _ = parse_scan_parameters({"az_center": 0, "el_center": 60, "az_throw": 1})
+    assert scan_kwargs["frame"] == "az/el"
+    assert not scan_kwargs["offsets"]

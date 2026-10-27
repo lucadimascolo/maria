@@ -62,3 +62,21 @@ We might also do a daisy scan on some given point on the sky, which the telescop
                                     duration=600, # in seconds
                                     sample_rate=50, # in Hz
                                     ) # in degrees
+
+++++++++++++++++++++++++++++++
+Scan parameters, frames, speed
+++++++++++++++++++++++++++++++
+
+The frame of a plan is inferred from the names of its scan parameters: ``az_center``/``el_center`` (and
+``az_throw``/``el_throw``) give an ``az/el`` plan, ``ra_center``/``dec_center`` an ``ra/dec`` plan, and ``l_center``/``b_center``
+a ``galactic`` plan. Scan parameters in different frames (e.g. ``az_center`` together with ``ra_throw``) raise a ``ValueError``.
+Angles are in degrees and speeds in degrees per second (in radians with ``"degrees": False``).
+
+The size of a scan can be given in two ways, and ``speed`` means a different thing for each:
+
+- ``radius`` (or ``x_throw``/``y_throw``): the scan pattern is made of offsets on the sky around the center, and ``speed`` is the
+  speed of the boresight on the sky.
+- ``<lon>_throw`` / ``<lat>_throw`` (e.g. ``az_throw``): the pattern is added to the coordinates themselves, so ``speed`` is the
+  rate of change of the coordinate. For an ``az_throw`` this is the azimuth rate of the mount, and the speed on the sky is
+  ``speed * cos(el)`` (half the requested value at an elevation of 60 degrees). This is the usual convention for
+  constant-elevation scans.
