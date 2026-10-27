@@ -69,6 +69,11 @@ def read_fits_map(path: str, index: int | None = None, strict: bool = True):
         data = hdu.data  # [..., ::-1, :]
         header = hdu.header
 
+        # maria writes the map weight in an extension named WEIGHT
+        weight = None
+        if "WEIGHT" in hdul and hdul["WEIGHT"].data is not None and hdul["WEIGHT"].data.shape == data.shape:
+            weight = hdul["WEIGHT"].data
+
     try:
         kwargs, axis_mask = parse_fits_map_header(header)
     except Exception as e:
@@ -77,6 +82,9 @@ def read_fits_map(path: str, index: int | None = None, strict: bool = True):
         logger.warning("Could not parse FITS header!")
         kwargs = {}
         axis_mask = np.ones(data.ndim, dtype=bool)
+
+    if weight is not None:
+        kwargs["weight"] = weight
 
     return data, axis_mask, kwargs, header
 
@@ -152,7 +160,7 @@ def parse_fits_map_header(header):
 
         CDELT = header.get(f"CDELT{AXIS}")
         CRVAL = header.get(f"CRVAL{AXIS}")
-        CRPIX = header.get(f"CRPIX{AXIS}")
+        CRPIX = header.get(f"CRPIX{AXIS}", 1.0)
         CUNIT = header.get(f"CUNIT{AXIS}", default_units)
 
         logger.debug(f"Found CTYPE{AXIS}: {repr(CTYPE)}")
@@ -172,8 +180,13 @@ def parse_fits_map_header(header):
             center[["xi", "eta"].index(dim)] = CRVAL
             spatial_axes[dim] = AXIS
         else:
-            axis_values = CDELT * np.arange(NAXIS, dtype=float)
-            axis_values += CRVAL - np.interp(CRPIX, np.arange(NAXIS), axis_values)
+            # maria used to write CRPIX = 0 with CRVAL at the first pixel, and 0-based Stokes indices
+            legacy = CRPIX == 0
+            # CRPIX is 1-based
+            axis_values = CRVAL + CDELT * (np.arange(NAXIS, dtype=float) - (0 if legacy else CRPIX - 1))
+            if dim == "stokes":
+                # FITS Stokes codes (I = 1, Q = 2, U = 3, V = 4) to maria's 0-based indices into "IQUV"
+                axis_values = np.round(axis_values).astype(int) - (0 if legacy else 1)
             axes[dim] = Quantity(axis_values, CUNIT)
 
     # CRVAL is the sky position of the reference pixel CRPIX, which need not be the middle of the image

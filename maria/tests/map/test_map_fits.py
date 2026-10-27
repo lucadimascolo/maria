@@ -145,3 +145,96 @@ def test_fits_round_trip(tmp_path, shape):
     assert np.allclose([m2.center[0].deg, m2.center[1].deg], [m.center[0].deg, m.center[1].deg], atol=1e-9)
     assert np.allclose(m2.xi.deg, m.xi.deg) and np.allclose(m2.eta.deg, m.eta.deg)
     assert np.allclose(m2.data.compute(), m.data.compute())
+
+
+def test_fits_spectral_and_stokes_axes(tmp_path):
+    """Other tools read maria's frequency and Stokes axes correctly, and maria reads standard cubes."""
+    nu = [90e9, 150e9, 210e9]
+    m = ProjectionMap(data=np.zeros((3, 3, 8, 8)), stokes="IQU", nu=nu, resolution=0.01, units="K_RJ")
+    wcs = WCS(m.header())
+    # FITS axes: (xi, eta, nu, stokes)
+    world = wcs.wcs_pix2world([[0, 0, k, k] for k in range(3)], 0)
+    assert np.allclose(world[:, 2], nu)
+    assert np.allclose(world[:, 3], [1, 2, 3])  # FITS Stokes codes I, Q, U
+
+    # a standard cube with 1-based reference pixels
+    w = WCS(naxis=4)
+    w.wcs.ctype = ["RA---ARC", "DEC--ARC", "FREQ", "STOKES"]
+    w.wcs.crval = [150.0, -30.0, 90e9, 2.0]  # the first Stokes plane is Q
+    w.wcs.cdelt = [-0.01, 0.01, 60e9, 1.0]
+    w.wcs.crpix = [4.5, 4.5, 1.0, 1.0]
+    w.wcs.cunit = ["deg", "deg", "Hz", ""]
+    path = str(tmp_path / "cube.fits")
+    write_image(path, np.zeros((3, 3, 8, 8)), w.to_header())
+    m2 = maria.map.load(path, units="K_RJ")
+    assert np.allclose(m2.nu.Hz, nu)
+    assert list(m2.stokes) == ["Q", "U", "V"]
+
+
+def test_fits_single_channel_wcs(tmp_path):
+    """A single-channel map writes a non-singular WCS."""
+    m = ProjectionMap(data=np.zeros((1, 8, 8)), nu=[150e9], resolution=0.01, units="K_RJ")
+    wcs = WCS(m.header())
+    assert np.isclose(wcs.wcs_pix2world([[0, 0, 0]], 0)[0, 2], 150e9)
+
+    path = str(tmp_path / "map.fits")
+    m.to_fits(path)
+    assert np.allclose(maria.map.load(path).nu.Hz, [150e9])
+
+
+def test_fits_round_trip_cube(tmp_path):
+    rng = np.random.default_rng(1)
+    shape = (3, 2, 4, 8, 9)
+    m = ProjectionMap(
+        data=rng.standard_normal(shape),
+        weight=rng.uniform(1, 2, size=shape),
+        stokes="IQU",
+        nu=[90e9, 150e9],
+        t=1.7e9 + 60.0 * np.arange(4),
+        resolution=0.01,
+        center=(10.0, 20.0),
+        units="K_RJ",
+        beam=(0.02, 0.01, 30.0),
+    )
+    header = m.header()
+    # the standard beam keywords, which CASA, radio-beam etc. read
+    assert np.isclose(header["BMAJ"], 0.02) and np.isclose(header["BMIN"], 0.01) and np.isclose(header["BPA"], 30.0)
+
+    path = str(tmp_path / "cube.fits")
+    m.to_fits(path)
+    m2 = maria.map.load(path)
+    assert list(m2.stokes) == list(m.stokes)
+    assert np.allclose(m2.nu.Hz, m.nu.Hz)
+    assert np.allclose(m2.t.seconds, m.t.seconds)
+    assert np.allclose(m2.data.compute(), m.data.compute())
+    assert np.allclose(m2.weight.compute(), m.weight.compute())
+    assert np.allclose(m2.beam.deg.reshape(-1, 3)[0], [0.02, 0.01, 30.0])
+
+
+@pytest.mark.parametrize(
+    "dim, ctype, crval, cdelt, n, expected",
+    [
+        ("stokes", "STOKES", 0, 0.0, 1, ["I"]),
+        ("stokes", "STOKES", 0, 1.0, 3, ["I", "Q", "U"]),
+        ("nu", "NU", 90e9, 60e9, 3, [90e9, 150e9, 210e9]),
+        ("t", "TIME", 1.7e9, 10.0, 3, [1.7e9, 1.7e9 + 10, 1.7e9 + 20]),
+    ],
+)
+def test_fits_read_old_maria_axes(tmp_path, dim, ctype, crval, cdelt, n, expected):
+    """Files written by older maria (CRPIX = 0 and CRVAL at the first pixel, 0-based Stokes) keep their axes."""
+    header = fits.Header()
+    for key, value in {"CTYPE1": "RA---SIN", "CRVAL1": 150.0, "CRPIX1": 4, "CDELT1": -0.01}.items():
+        header[key] = value
+    for key, value in {"CTYPE2": "DEC--SIN", "CRVAL2": -30.0, "CRPIX2": 4, "CDELT2": 0.01}.items():
+        header[key] = value
+    for key, value in {"CTYPE3": ctype, "CRVAL3": crval, "CRPIX3": 0, "CDELT3": cdelt}.items():
+        header[key] = value
+    header["BUNIT"] = "K_RJ"
+    path = str(tmp_path / "old.fits")
+    write_image(path, np.zeros((n, 8, 8)), header)
+
+    values = getattr(maria.map.load(path), dim)
+    if dim == "stokes":
+        assert list(values) == expected
+    else:
+        assert np.allclose(values.base_units_value, expected, rtol=0, atol=1e-3 * cdelt)
