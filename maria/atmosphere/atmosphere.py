@@ -87,6 +87,19 @@ class Atmosphere:
         Simulate a realization of PWV.
         """
 
+        # fail early (rather than deep inside the loading computation) when the weather is outside the spectrum tables
+        for name, value, side, units in [
+            ("PWV", self.weather.pwv.mm, self.spectrum.side_pwv.mm, "mm"),
+            ("effective temperature", self.weather.effective_temperature.K, self.spectrum.side_effective_temperature.K, "K"),
+        ]:
+            if not side.min() <= value <= side.max():
+                raise ValueError(
+                    f"The {name} of the weather ({value:.02f} {units}) for region '{self.weather.region}' at "
+                    f"{self.weather.local_time.format('YYYY-MM-DD HH:mm ZZ')} is outside the range of the atmospheric "
+                    f"spectrum ({side.min():.02f} to {side.max():.02f} {units}). Try other weather quantiles or a "
+                    f"weather override."
+                )
+
         self.layers = generate_layers(
             instrument=obs.instrument,
             boresight=obs.boresight,
