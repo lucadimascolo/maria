@@ -89,3 +89,6 @@ A band's ``NEP_per_loading`` (default 0) adds noise that grows with the optical 
 used for each sample is ``NEP + NEP_per_loading * P``, with ``NEP_per_loading`` in W√s per pW of loading and ``P``
 the total simulated loading in pW (atmosphere and sky), clipped at zero. This is a linear model, not a
 photon-noise (√P) model.
+
+Detector time constants are not implemented: a band's ``time_constant`` is stored but not applied to the
+simulated data, and a non-zero value logs a warning.

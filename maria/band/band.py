@@ -133,13 +133,21 @@ class Band:
             else:
                 raise FrequencyOutOfBoundsError(nu=bad_freqs)
 
-        # this turns e.g. 56MHz to "f056" and 150GHz to "f150"
-        self.name = name or f"f{10 ** (np.log10(self.center.Hz) % 3):>03.0f}"
+        # this turns e.g. 150GHz to "f150", 1.5THz to "f1500" and (as on master) 56MHz to "f056"
+        if name is None:
+            nu_GHz = self.center.Hz / 1e9
+            name = f"f{nu_GHz:>03.0f}" if nu_GHz >= 1 else f"f{10 ** (np.log10(self.center.Hz) % 3):>03.0f}"
+        self.name = name
         self.shape = shape
         self.efficiency = efficiency
         self.NEP_per_loading = Quantity(NEP_per_loading, "W√s")
         self.knee = knee
         self.time_constant = time_constant
+        if time_constant:
+            logger.warning(
+                f"Band {self.name} has a time constant of {time_constant} s, but detector time constants are not "
+                "implemented: it is ignored by the simulation."
+            )
         self.gain_error = gain_error
 
         self.spectrum_kwargs = {}
@@ -167,7 +175,9 @@ class Band:
 
     @property
     def center(self):
-        return Quantity(np.round(np.sum(self.nu.Hz * self.tau) / np.sum(self.tau), 2), "Hz")
+        # trapezoid weights, so that the centre is right for a non-uniform frequency grid
+        nu = self.nu.Hz
+        return Quantity(np.round(np.trapezoid(nu * self.tau, x=nu) / np.trapezoid(self.tau, x=nu), 2), "Hz")
 
     @property
     def width(self):
