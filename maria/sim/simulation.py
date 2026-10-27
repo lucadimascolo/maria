@@ -275,6 +275,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             metadata["atmosphere"] = True
             metadata["pwv"] = float(np.round(obs.atmosphere.weather.pwv.mm, 3))
             metadata["effective_temperature"] = float(np.round(obs.atmosphere.weather.effective_temperature.K, 3))
+            metadata["pressure_level"] = float(obs.atmosphere.spectrum.pressure_level.hPa)
         else:
             metadata["atmosphere"] = False
 

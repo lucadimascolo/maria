@@ -76,7 +76,7 @@ class TOD:
     def spectrum(self):
         if not hasattr(self, "_spectrum"):
             if "region" in self.metadata:
-                self._spectrum = AtmosphericSpectrum(self.metadata["region"])
+                self._spectrum = AtmosphericSpectrum(self.metadata["region"], self.metadata.get("pressure_level"))
             else:
                 self._spectrum = None
         return self._spectrum

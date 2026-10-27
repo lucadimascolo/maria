@@ -49,10 +49,6 @@ class Atmosphere:
                 f"Invalid model '{model}'. Supported models are {SUPPORTED_MODELS_LIST}.",
             )
 
-        self.spectrum = AtmosphericSpectrum(
-            region=region,
-        )
-
         self.kwargs = kwargs
 
         self.weather = Weather(
@@ -63,6 +59,9 @@ class Atmosphere:
             quantiles=weather_quantiles,
             source=weather_source,
         )
+
+        # the spectrum must be evaluated at the pressure level of the site, at the time of the observation
+        self.spectrum = AtmosphericSpectrum.from_weather(self.weather)
 
         self.pwv_rms_frac = pwv_rms_frac
 
