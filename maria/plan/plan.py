@@ -246,6 +246,7 @@ class Plan:
         longitude: float = None,  # in degrees
         altitude: float = 0,  # in meters
     ):
+        self.site = None
         if site is not None:
             if isinstance(site, str):
                 site = get_site(site)
@@ -527,11 +528,11 @@ class Plan:
     {ctheta_repr}"""
 
         if not self.naive:
-            repr_lat, repr_lon = repr_lat_lon(self.site.latitude.degrees, self.site.longitude.degrees)
+            repr_lat, repr_lon = repr_lat_lon(self.earth_location.lat.deg, self.earth_location.lon.deg)
             location_string = f"""
     lat: {repr_lat}
     lon: {repr_lon}
-    alt: {self.site.altitude}"""
+    alt: {Quantity(self.earth_location.height.to("m").value, "m")}"""
             if self.frame.name != "az/el":
                 caz, cel = self.center(frame="az/el")
                 center_string = f"""center:
@@ -558,11 +559,21 @@ class Plan:
 
         assert self.end_time < other.start_time
 
+        if other.frame.name != self.frame.name:
+            raise ValueError(f"Cannot add plans in different frames ('{self.frame.name}' and '{other.frame.name}').")
+        if other.roll != self.roll:
+            raise ValueError(f"Cannot add plans with different rolls ({self.roll} and {other.roll}).")
+
         time = np.r_[self.time, other.time]
         phi = np.r_[self.phi, other.phi]
         theta = np.r_[self.theta, other.theta]
 
-        return Plan(time=time, phi=phi, theta=theta, frame=self.frame.name, site=self.site)
+        location_kwargs = {"site": self.site}
+        if self.site is None and not self.naive:
+            loc = self.earth_location
+            location_kwargs = {"latitude": loc.lat.deg, "longitude": loc.lon.deg, "altitude": loc.height.to("m").value}
+
+        return Plan(time=time, phi=phi, theta=theta, roll=self.roll, frame=self.frame.name, **location_kwargs)
 
     def __radd__(self, other):
         return other.__add__(self)

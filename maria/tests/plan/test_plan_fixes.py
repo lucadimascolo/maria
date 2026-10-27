@@ -110,3 +110,27 @@ def test_generate_with_instrument_and_no_sample_rate():
         stare(instrument="not-an-instrument", sample_rate=None)
     # as on master: with a sample rate, the instrument is not used
     assert stare(instrument=1.0, sample_rate=10).n == 100
+
+
+def test_add_plans_keeps_roll_and_location():
+    """P9: Plan.__add__ dropped the roll, and crashed for plans without a site."""
+    a = stare(roll=30.0, site="cerro_toco")
+    b = stare(start_time=T0 + 20, roll=30.0, site="cerro_toco")
+    ab = a + b
+    assert ab.roll == 30.0
+    assert ab.n == a.n + b.n
+    assert ab.site is a.site
+    assert np.isclose(ab.sample_rate.Hz, 10.0)  # the gap between the plans is not a sample step
+
+    # no site
+    assert (stare() + stare(start_time=T0 + 20)).earth_location is None
+
+    # a location given by latitude and longitude
+    location = dict(frame="az/el", latitude=-23.0, longitude=-67.8, altitude=5000)
+    cd = Plan(time=a.time, phi=a.phi, theta=a.theta, **location) + Plan(time=b.time, phi=b.phi, theta=b.theta, **location)
+    assert np.isclose(cd.earth_location.lat.deg, -23.0)
+    assert np.isclose(cd.earth_location.height.to("m").value, 5000)
+    repr(cd)
+
+    with pytest.raises(ValueError):
+        a + stare(start_time=T0 + 20, roll=10.0, site="cerro_toco")
