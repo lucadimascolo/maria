@@ -313,6 +313,7 @@ class Atmosphere:
 
             success = False
             for jitter in [1e-8, 1e-6, 1e-4]:
+                process.jitter = jitter
                 try:
                     process.compute_covariance_matrices()
                     success = True

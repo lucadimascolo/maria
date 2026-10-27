@@ -360,7 +360,7 @@ column dry_air vmr"""
         if fields is None:
             fields = ["z", "pressure", *list(self.data["levels"].keys()), "absolute_humidity", "air_density", "dew_point"]
 
-        if pressure_level:
+        if pressure_level is not None:
             altitude = sp.interpolate.interp1d(self.pressure.Pa, self.z.m, bounds_error=False, fill_value="extrapolate")(
                 Quantity(pressure_level, "hPa").Pa
             )
