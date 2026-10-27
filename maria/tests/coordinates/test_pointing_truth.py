@@ -249,3 +249,12 @@ def test_slice_does_not_keep_the_cached_center():
         fresh_center = boresight(t, 100.0, 45.0).broadcast(offsets[6:]).center(frame)
         err = separation_arcsec(slice_center[0].rad, slice_center[1].rad, fresh_center[0].rad, fresh_center[1].rad)
         assert err < 0.1, f"{frame}: slice centre is {err:.1f} arcsec off"
+
+
+def test_summary():
+    """P13: Coordinates.summary used self.boresight without calling it, and raised AttributeError."""
+    t = T0 + np.arange(0, 60, 1.0)
+    summary = boresight(t, 100.0, 45.0).broadcast(grid_offsets(n=3)).summary
+
+    assert list(summary.index) == ["az", "el", "ra", "dec"]
+    assert summary.loc["el", "mean"].startswith("45.0")
