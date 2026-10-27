@@ -81,3 +81,47 @@ def test_radec_to_azel_matches_astropy():
     err = separation_arcsec(coords.az, coords.el, az, el)
 
     assert err.max() < 0.5, f"max error {err.max():.3f} arcsec"
+
+
+def test_long_span_matches_astropy():
+    """P2: transform nodes every 600 s with a quadratic interpolation gave ~2.6" at a 1700 s span."""
+    t = T0 + np.arange(0, 1700, 1.0)
+    coords = boresight(t, 120.0, 50.0)
+
+    ra, dec = true_sky(coords.az, coords.el, t, coords.earth_location)
+    err = separation_arcsec(coords.ra, coords.dec, ra, dec)
+
+    assert err.max() < 0.2, f"max error {err.max():.3f} arcsec"
+
+
+def test_transform_does_not_depend_on_time_span():
+    """P2: the transform nodes were spread over the span of the coordinates, so the same sample got a different
+    ra/dec when the coordinates covered a different time range (e.g. a time chunk)."""
+    t = T0 + 13.7 + np.arange(0, 1800, 0.5)
+    az = 120 + 5 * np.sin(2 * np.pi * (t - T0) / 37.0)
+
+    full = boresight(t, az, 50.0).broadcast(grid_offsets(n=3))
+    n = len(t) // 4
+    for s in [slice(0, n), slice(n, 2 * n)]:
+        part = boresight(t[s], az[s], 50.0).broadcast(grid_offsets(n=3))
+        err = separation_arcsec(part.ra, part.dec, full.ra[:, s], full.dec[:, s])
+        assert err.max() < 0.1, f"max difference {err.max():.3f} arcsec"
+
+
+def test_wide_scan_matches_astropy():
+    """P2: a back-and-forth scan of +-20 deg in az at 2 deg/s. The transform at each node is fitted around the
+    boresight at that node, so the accuracy and the chunk independence degrade when the boresight moves far within the
+    +-2 nodes (~0.75" and ~0.25" here, against ~0.1" and ~0.03" for a +-5 deg throw)."""
+    t = T0 + 13.7 + np.arange(0, 1200, 0.5)
+    az = 120 + 20 * (2 / np.pi) * np.arcsin(np.sin(2 * np.pi * 2.0 * (t - T0) / 80.0))
+
+    full = boresight(t, az, 45.0).broadcast(grid_offsets(n=3))
+    ra, dec = true_sky(full.az, full.el, t, full.earth_location)
+    err = separation_arcsec(full.ra, full.dec, ra, dec)
+    assert err.max() < 1.0, f"max error {err.max():.3f} arcsec"
+
+    n = len(t) // 4
+    for s in [slice(0, n), slice(2 * n + 17, 3 * n + 101)]:
+        part = boresight(t[s], az[s], 45.0).broadcast(grid_offsets(n=3))
+        err = separation_arcsec(part.ra, part.dec, full.ra[:, s], full.dec[:, s])
+        assert err.max() < 0.5, f"max difference {err.max():.3f} arcsec"

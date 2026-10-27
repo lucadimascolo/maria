@@ -26,6 +26,7 @@ from .transforms import (
     phi_theta_to_offsets,
     phi_theta_to_xyz,
     unjitted_offsets_to_phi_theta,
+    unjitted_phi_theta_to_xyz,
     xyz_to_phi_theta,
 )
 
@@ -40,6 +41,9 @@ DEFAULT_EARTH_LOCATION = EarthLocation.from_geodetic(
     ellipsoid=None,
 )  # noqa
 DEFAULT_TIMESTAMP = arrow.now().timestamp()
+
+# spacing of the time nodes at which the frame transforms are computed exactly (the Earth turns 0.25 deg in 60 s)
+_TRANSFORM_NODE_SPACING_SECONDS = 60.0
 
 
 class Coordinates:
@@ -102,23 +106,11 @@ class Coordinates:
         keep_dims = (-1,) if hasattr(self.t, "__len__") else ()
         t_ordered_center_phi_theta = np.c_[get_center_phi_theta(self._phi, self._theta, keep_dims=keep_dims)]
 
-        # (nt) t samples on which to explicitly compute the transformation from astropy
-        t_samples_min_res_seconds = 600
-        t_samples_min = np.min(self.t) - 1e0
-        t_samples_max = np.max(self.t) + 1e0
-        n_t_samples = int(
-            np.maximum(
-                3,
-                (t_samples_max - t_samples_min) / t_samples_min_res_seconds,
-            ),
-        )
-
-        n_t_samples = np.minimum(n_t_samples, 10000)
-
-        if 3 <= self.t.size < n_t_samples:
-            self.fid_t = self.t
-        else:
-            self.fid_t = np.linspace(t_samples_min, t_samples_max, n_t_samples)
+        # (n_nodes) times at which the transform is computed with astropy: the points of an absolute time grid that
+        # _interpolate_transform needs, so that the transform at a given time does not depend on the time span
+        node_index = np.floor(self.shaped_t / _TRANSFORM_NODE_SPACING_SECONDS).astype(np.int64)
+        self.fid_node_index = np.unique(np.unique(node_index)[:, None] + np.arange(-1, 3)[None])
+        self.fid_t = self.fid_node_index * _TRANSFORM_NODE_SPACING_SECONDS
 
         sample_indices = interp1d(
             self.shaped_t,
@@ -140,10 +132,12 @@ class Coordinates:
 
         # for sample_index =
 
+        # the fit is done in float64 numpy, so that it is accurate and does not depend on the number of nodes
         fpt = unjitted_offsets_to_phi_theta(
-            fid_offsets[..., :2],
-            t_ordered_center_phi_theta[:, 0][sample_indices][..., None],
-            t_ordered_center_phi_theta[:, 1][sample_indices][..., None],
+            fid_offsets,
+            np.float64(t_ordered_center_phi_theta[:, 0][sample_indices])[..., None],
+            np.float64(t_ordered_center_phi_theta[:, 1][sample_indices])[..., None],
+            xp=np,
         )
 
         self.fid_phi, self.fid_theta = fpt[..., 0], fpt[..., 1]
@@ -171,7 +165,7 @@ class Coordinates:
         }
 
         self.transforms = {}
-        self.fid_points = {self.frame.name: phi_theta_to_xyz(self.fid_phi, self.fid_theta)}
+        self.fid_points = {self.frame.name: unjitted_phi_theta_to_xyz(self.fid_phi, self.fid_theta, xp=np)}
         self.A = self.fid_points[self.frame.name]
         self.AT = np.swapaxes(self.fid_points[self.frame.name], -2, -1)
 
@@ -204,21 +198,12 @@ class Coordinates:
             frame.astropy_theta,
         ).rad
 
-        self.fid_points[frame.name] = phi_theta_to_xyz(frame_fid_phi, frame_fid_theta)
+        self.fid_points[frame.name] = unjitted_phi_theta_to_xyz(frame_fid_phi, frame_fid_theta, xp=np)
 
-        # voodoo!
-        self.transforms[frame.name] = (
-            np.linalg.inv(self.AT @ self.A) @ self.AT @ phi_theta_to_xyz(frame_fid_phi, frame_fid_theta)
-        )
+        # voodoo! (least squares, per node)
+        self.transforms[frame.name] = np.linalg.inv(self.AT @ self.A) @ self.AT @ self.fid_points[frame.name]
 
-        transform_stack = interp1d(
-            self.fid_t,
-            self.transforms[frame.name],
-            kind="quadratic",
-            bounds_error=False,
-            fill_value="extrapolate",
-            axis=0,
-        )(self.t)
+        transform_stack = self._interpolate_transform(self.transforms[frame.name])
 
         frame_phi, frame_theta = xyz_to_phi_theta(
             (np.expand_dims(self.compute_points(), -2) @ transform_stack).squeeze(),
@@ -234,6 +219,27 @@ class Coordinates:
             f"Computed transform to frame '{frame.name}' for Coordinates with shape {self.shape} "
             f"in {humanize_time(duration)}.",
         )  # noqa
+
+    def _interpolate_transform(self, node_transforms):
+        """
+        Interpolate the transforms computed at the nodes to the sample times, with a local cubic (four-point
+        Lagrange) interpolation. The interpolated transform at some time only depends on the four nearest nodes.
+        """
+        u = np.atleast_1d(self.t) / _TRANSFORM_NODE_SPACING_SECONDS  # not shaped_t, which slices do not update
+        k = np.floor(u).astype(np.int64)
+        s = (u - k)[:, None, None]
+        i = np.searchsorted(self.fid_node_index, k - 1)
+
+        weights = [
+            -s * (s - 1) * (s - 2) / 6,
+            (s + 1) * (s - 1) * (s - 2) / 2,
+            -(s + 1) * s * (s - 2) / 2,
+            (s + 1) * s * (s - 1) / 6,
+        ]
+
+        transform_stack = sum(w * node_transforms[i + j] for j, w in enumerate(weights))
+
+        return transform_stack if hasattr(self.t, "__len__") else transform_stack[0]
 
     @property
     def shape(self):

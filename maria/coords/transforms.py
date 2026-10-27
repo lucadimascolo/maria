@@ -7,24 +7,25 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def unjitted_offsets_to_phi_theta(dX, cphi, ctheta):
+def unjitted_offsets_to_phi_theta(dX, cphi, ctheta, xp=jnp):
     """
     A fast and well-conditioned method to convert from local dx/dy coordinates to phi/theta coordinates.
+    Pass xp=np to compute it in numpy (e.g. in float64; JAX runs in float32).
     """
 
     dx, dy = dX[..., 0], dX[..., 1]
 
-    r = jnp.sqrt(dx**2 + dy**2)  # distance from the center
-    p = jnp.arctan2(-dx, -dy)  # 0 at the bottom, increases CCW to pi at the top
+    r = xp.sqrt(dx**2 + dy**2)  # distance from the center
+    p = xp.arctan2(-dx, -dy)  # 0 at the bottom, increases CCW to pi at the top
 
     # if we're looking at the north pole, we have (lon, lat) = (p, pi/2 - r)
     # a projection looking from the east
-    proj_from_east = (jnp.sin(r) * jnp.cos(p) + 1j * jnp.cos(r)) * jnp.exp(
-        1j * (ctheta - jnp.pi / 2),
+    proj_from_east = (xp.sin(r) * xp.cos(p) + 1j * xp.cos(r)) * xp.exp(
+        1j * (ctheta - xp.pi / 2),
     )
 
-    return jnp.stack(
-        [jnp.arctan2(jnp.sin(r) * jnp.sin(p), jnp.real(proj_from_east)) + cphi, jnp.arcsin(jnp.imag(proj_from_east))],
+    return xp.stack(
+        [xp.arctan2(xp.sin(r) * xp.sin(p), xp.real(proj_from_east)) + cphi, xp.arcsin(xp.imag(proj_from_east))],
         axis=-1,
     )
 
@@ -52,16 +53,18 @@ def phi_theta_to_offsets(pt, cphi, ctheta):
     return jnp.stack([-jnp.real(dz), -jnp.imag(dz)], axis=-1)
 
 
-@jax.jit
-def phi_theta_to_xyz(phi, theta):
+def unjitted_phi_theta_to_xyz(phi, theta, xp=jnp):
     """
     Project some angular coordinates phi (longitude) and theta (latitude) onto the 3d unit sphere.
     """
-    cos_theta = jnp.cos(theta)
-    return jnp.stack(
-        [jnp.cos(phi) * cos_theta, jnp.sin(phi) * cos_theta, jnp.sin(theta)],
+    cos_theta = xp.cos(theta)
+    return xp.stack(
+        [xp.cos(phi) * cos_theta, xp.sin(phi) * cos_theta, xp.sin(theta)],
         axis=-1,
     )
+
+
+phi_theta_to_xyz = jax.jit(unjitted_phi_theta_to_xyz)
 
 
 @jax.jit
