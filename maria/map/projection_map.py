@@ -133,10 +133,15 @@ class ProjectionMap(Map):
         # parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in self.dims}
         # self.apply_parity(**parity_signature)
 
-    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = False):
+    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = False, zero_outside: bool = False):
+        """
+        zero_outside: give samples beyond the outer pixel edges (half a pixel past the outer pixel centres) of the map
+        zero weight, i.e. no signal, instead of the value of the nearest edge pixel. Samples before or after the time
+        range of the map always take its first or last epoch.
+        """
         offsets = coords.offsets(center=(self.center[0].rad, self.center[1].rad), frame=self.frame.name)
 
-        return compute_pointing_matrix_ingredients(
+        samples, pixels, weights, n_pixels, n_samples = compute_pointing_matrix_ingredients(
             x_list=(
                 coords._t,
                 offsets[..., 1],
@@ -145,6 +150,19 @@ class ProjectionMap(Map):
             side_list=(self.t.seconds, self.eta.radians, self.xi.radians),
             bilinear=bilinear,
         )
+
+        if zero_outside:
+            # (the offsets can be a float32 jax array: the mask is made in numpy, so that the weights keep their dtype)
+            inside = np.ones(offsets.shape[:-1], dtype=bool)
+            for x, side in [(np.asarray(offsets[..., 1]), self.eta.radians), (np.asarray(offsets[..., 0]), self.xi.radians)]:
+                if np.size(side) > 1:
+                    # the outer pixel edges, which also works for a descending side
+                    first_edge = side[0] - 0.5 * (side[1] - side[0])
+                    last_edge = side[-1] + 0.5 * (side[-1] - side[-2])
+                    inside &= (x - first_edge) * (x - last_edge) <= 0
+            weights = weights * inside.reshape(weights.shape[1:])
+
+        return samples, pixels, weights, n_pixels, n_samples
 
     def header(self):
 
