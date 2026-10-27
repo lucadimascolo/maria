@@ -358,9 +358,23 @@ class Map:
         """
         Returns the beam area in steradians
         """
-        area = (np.pi / 4) * self.beam[..., 0].radians * self.beam[..., 1].radians
+        # beam (major, minor) are FWHMs, so the Gaussian solid angle is 2 pi sigma_major sigma_minor
+        area = (np.pi / (4 * np.log(2))) * self.beam[..., 0].radians * self.beam[..., 1].radians
         area = np.expand_dims(area, axis=(-1, -2)[: len(self.map_dims)])
         return Quantity(area, "sr")
+
+    def _smoothed_beam(self, sigma: Quantity):
+        """
+        The beam (in degrees) after convolution with a circular Gaussian of width `sigma`, and the factor that keeps
+        the convolved data in units per beam (the ratio of the beam areas).
+        """
+        beam = self.beam.deg.copy()
+        beam[..., :2] = np.hypot(beam[..., :2], (np.sqrt(8 * np.log(2)) * sigma).deg)
+
+        if self.u["physical_quantity"] != "spectral_flux_density_per_beam":
+            return beam, 1
+        beam_area_ratio = beam[..., :2].prod(axis=-1) / self.beam.deg[..., :2].prod(axis=-1)
+        return beam, np.expand_dims(beam_area_ratio, axis=(-1, -2)[: len(self.map_dims)])
 
     def beam_repr(self):
         slice_axes = tuple(range(self.beam.ndim - 1))

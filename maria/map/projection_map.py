@@ -451,6 +451,12 @@ class ProjectionMap(Map):
         if self._weight is not None:
             package["weight"] = denom
 
+        package["beam"], beam_area_ratio = self._smoothed_beam(sigma)
+        package["data"] = package["data"] * beam_area_ratio
+        # the data of a map in units per beam are rescaled, and so its inverse-variance weight by the inverse square
+        if self._weight is not None:
+            package["weight"] = package["weight"] * beam_area_ratio**-2
+
         return type(self)(**package)
 
     def transfer_function(
