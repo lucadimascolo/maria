@@ -81,24 +81,31 @@ class MapMixin:
         for map_name, m in self.maps.items():
             map_loading = np.zeros(obs.coords.shape, dtype=self.dtype)
 
+            # the detectors of one band can sit behind different apertures, which give them different beams
+            primary_sizes = np.asarray(obs.instrument.dets.primary_size)
+            band_groups = []
+            for band in obs.instrument.dets.bands:
+                in_band = np.asarray(obs.instrument.dets.band_name == band.name)
+                for primary_size in np.unique(primary_sizes[in_band]):
+                    band_groups.append((band, in_band & (primary_sizes == primary_size), primary_size))
+
             bands_pbar = tqdm(
-                obs.instrument.dets.bands,
+                band_groups,
                 desc=f"Sampling source '{map_name}'",
                 disable=self.disable_progress_bars,
                 bar_format=DEFAULT_BAR_FORMAT,
                 ncols=250,
                 postfix={"band": "", "channel": "", "stokes": ""},
             )
-            for band in bands_pbar:
+            for band, band_mask, primary_size in bands_pbar:
                 bands_pbar.set_postfix(band=band.name)
 
-                band_mask = obs.instrument.dets.band_name == band.name
                 band_coords = obs.coords[band_mask]
                 band_dets = obs.instrument.dets[band_mask]
 
                 band_fwhm = Quantity(
                     compute_angular_fwhm(
-                        fwhm_0=obs.instrument.dets.primary_size.mean(),
+                        fwhm_0=primary_size,
                         z=np.inf,
                         nu=band.center.Hz,
                     ),
