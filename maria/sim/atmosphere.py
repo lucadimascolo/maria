@@ -18,6 +18,7 @@ here, this_filename = os.path.split(__file__)
 logger = logging.getLogger("maria")
 
 DEFAULT_ATMOSPHERE_SIM_KWARGS = {}
+_VALID_ATMOSPHERE_SIM_KWARGS = ["weather", "layers"]
 
 
 class AtmosphereMixin:
