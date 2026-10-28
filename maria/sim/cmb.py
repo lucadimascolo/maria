@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import time as ttime
 
@@ -32,6 +33,19 @@ class CMBMixin:
         self.cmb_kwargs.update(cmb_kwargs)
 
         if cmb in ["spectrum", "power_spectrum", "generate", "generated"]:
+            cmb_function = generate_cmb
+        elif cmb in ["real", "planck"]:
+            cmb_function = get_cmb
+        else:
+            raise ValueError(f"Invalid value for cmb '{cmb}'.")
+
+        parameters = inspect.signature(cmb_function).parameters.values()
+        valid_kwargs = [p.name for p in parameters if p.kind != p.VAR_KEYWORD]
+        invalid_kwargs = [key for key in self.cmb_kwargs if key not in valid_kwargs]
+        if invalid_kwargs:
+            raise ValueError(f"Invalid cmb_kwargs {invalid_kwargs} for cmb='{cmb}'; valid ones are {valid_kwargs}.")
+
+        if cmb_function is generate_cmb:
             for _ in tqdm(
                 range(1),
                 desc=f"Generating CMB (nside={self.cmb_kwargs['nside']})",
@@ -39,10 +53,8 @@ class CMBMixin:
                 bar_format=DEFAULT_BAR_FORMAT,
             ):
                 self.cmb = generate_cmb(**self.cmb_kwargs)
-        elif cmb in ["real", "planck"]:
-            self.cmb = get_cmb(**self.cmb_kwargs)
         else:
-            raise ValueError(f"Invalid value for cmb '{cmb}'.")
+            self.cmb = get_cmb(**self.cmb_kwargs)
 
         if self.cmb.units != "K_CMB":
             self.cmb = self.cmb.to("K_CMB")
