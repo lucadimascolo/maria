@@ -36,8 +36,14 @@ class MapMixin:
 
     def _initialize_map(self, map: str | Map, **map_kwargs):
         if isinstance(map, str):
-            m = get(map, **map_kwargs)
+            # the simulation settings are not map metadata
+            m = get(map, **{k: v for k, v in map_kwargs.items() if k not in DEFAULT_MAP_SIM_KWARGS})
         elif isinstance(map, Map):
+            invalid_kwargs = [key for key in map_kwargs if key not in DEFAULT_MAP_SIM_KWARGS]
+            if invalid_kwargs:
+                raise ValueError(
+                    f"Invalid map_kwargs {invalid_kwargs}; valid ones are {list(DEFAULT_MAP_SIM_KWARGS.keys())}."
+                )
             m = map.copy()
         else:
             raise ValueError("'map' must be either a Map or a string")
