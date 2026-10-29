@@ -48,7 +48,17 @@ def rayleigh_jeans_temperature_to_brightness_temperature(T_RJ, nu, **kwargs):
     return inverse_planck_spectrum(I_nu=I_nu, nu=nu)
 
 
+def _check_brightness_temperature(T_b):
+    """
+    A brightness temperature is absolute: the Planck spectrum of a negative one is negative and does not tend to 0
+    (about -7.2 K_RJ at 150 GHz for -1e-6 K_b), so negative values raise.
+    """
+    if np.any(np.asarray(T_b) < 0):
+        raise ValueError("Brightness temperatures (K_b) are absolute and must not be negative.")
+
+
 def brightness_temperature_to_rayleigh_jeans_temperature(T_b, nu, **kwargs):
+    _check_brightness_temperature(T_b)
     I_nu = planck_spectrum(T_b=T_b, nu=nu)
     return inverse_rayleigh_jeans_spectrum(I_nu=I_nu, nu=nu)
 
@@ -160,6 +170,7 @@ def brightness_temperature_to_power(T_b, band, polarized: bool = False, spectrum
     line at min(T_b)). Non-finite temperatures give NaN.
     """
     T_b = np.asarray(T_b, dtype=float)
+    _check_brightness_temperature(T_b)
     finite = np.isfinite(T_b)
     # the grid spans the finite temperatures (any grid will do when there are none: they all give NaN)
     T_b_finite = T_b[finite] if finite.any() else np.zeros(1)
