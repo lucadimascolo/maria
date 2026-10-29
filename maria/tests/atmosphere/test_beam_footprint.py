@@ -110,3 +110,19 @@ def test_cross_section_spacing_matches_the_smoothing():
     removed, error = smoothing_statistics(instrument, atmosphere)
     assert 0.85 < removed < 1.10
     assert error < 0.04
+
+
+def test_grid_is_padded_for_the_beam_smoothing():
+    """The grid of a layer extended only 1-2 resolution elements past the sampled points, less than the reach of the
+    beam smoothing, so the (reflecting) edges of the grid were smoothed into the beam. For a single detector near
+    the zenith the beam-scale power removed by the smoothing must match the truth (0.79x without the padding)."""
+    instrument, atmosphere = windless_layer(field_of_view=0.0, elevation=88, n=1)
+    (process,) = atmosphere.processes.values()
+    layer = process.layers.iloc[0]
+    margin = 3 * instrument.dets.physical_fwhm(layer.z).m.max() / 2.355
+    assert np.ptp(process.cross_section[:, 0]) >= 2 * margin
+    assert np.ptp(process.extrusion) >= 2 * margin - layer.res
+
+    removed, error = smoothing_statistics(instrument, atmosphere, n_seeds=6)
+    assert 0.9 < removed < 1.12
+    assert error < 0.035

@@ -57,6 +57,13 @@ def _scan_speed(coords) -> float:
     return float(np.quantile(speed, _SCAN_SPEED_QUANTILE))
 
 
+def _beam_smoothing_margin(instrument, layer) -> float:
+    """
+    How far (in meters) the beam smoothing of a layer reaches: three times the widest beam sigma.
+    """
+    return 3 * instrument.dets.physical_fwhm(layer.z).m.max() / 2.355
+
+
 class Atmosphere:
     def __init__(
         self,
@@ -242,11 +249,13 @@ class Atmosphere:
             for i, (layer_index, layer) in enumerate(
                 self.layers.loc[in_process].iterrows(),
             ):
+                # pad the cross-section so that the beam smoothing does not reach its edges
+                margin = max(layer.res, _beam_smoothing_margin(obs.instrument, layer))
                 # round up, so that the spacing of the cross-section is at most the resolution of the layer
-                n_cross_section = int(np.ceil((np.ptp(tp[:, 1]) + 2 * layer.res) / layer.res)) + 1
+                n_cross_section = int(np.ceil((np.ptp(tp[:, 1]) + 2 * margin) / layer.res)) + 1
                 cross_section_points = np.stack(
                     [
-                        np.linspace(tp[:, 1].min() - layer.res, tp[:, 1].max() + layer.res, n_cross_section),
+                        np.linspace(tp[:, 1].min() - margin, tp[:, 1].max() + margin, n_cross_section),
                         layer.h * np.ones(n_cross_section),
                     ]
                 ).T
@@ -274,9 +283,13 @@ class Atmosphere:
 
             cross_section_points = np.concatenate(cross_section_points_list, axis=0)
 
+            extrusion_margin = max(
+                2 * self.layers.res.min(),
+                *[_beam_smoothing_margin(obs.instrument, layer) for _, layer in self.layers.loc[in_process].iterrows()],
+            )
             extrusion_points = np.arange(
-                min_tx - 2 * self.layers.res.min(),
-                max_tx + 2 * self.layers.res.min(),
+                min_tx - extrusion_margin,
+                max_tx + extrusion_margin,
                 self.layers.res.min(),
             )
 
