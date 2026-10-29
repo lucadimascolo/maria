@@ -14,7 +14,7 @@ from ..coords import Coordinates
 from ..errors import PointingError
 from ..instrument import Instrument, get_instrument
 from ..io import DEFAULT_BAR_FORMAT, fetch, humanize_time, read_yaml
-from ..map import Map, load
+from ..map import HEALPixMap, Map, load
 from ..plan import Plan, PlanList, get_plan
 from ..site import Site, get_site
 from ..tod import TOD
@@ -80,7 +80,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         site: Site | str,
         atmosphere: Atmosphere | str = None,
         atmosphere_kwargs: dict = {},
-        cmb: CMB | str = None,
+        cmb: HEALPixMap | str = None,
         cmb_kwargs: dict = {},
         map: Map | str = None,
         map_kwargs: dict = {},

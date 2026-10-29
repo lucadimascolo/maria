@@ -66,3 +66,37 @@ def test_generate_cmb_seed():
     alm = hp.synalm((cl.TT, cl.EE, cl.BB, cl.TE), lmax=lmax, new=True)
     reference = hp.alm2map(alm, nside=32, lmax=lmax)
     assert np.array_equal(np.asarray(generate_cmb(nside=32).data).reshape(3, -1), reference.astype(np.float32))
+
+
+def cmb_sim(**kwargs):
+    plan = maria.Plan.generate(
+        start_time="2025-01-01T07:00:00",
+        scan_type="daisy",
+        scan_parameters={"radius": 1.0, "speed": 0.5},
+        duration=10,
+        sample_rate=10,
+        scan_center=(150.0, -30.0),
+        frame="ra/dec",
+        jitter=0,
+    )
+    return maria.Simulation(
+        instrument="test/1deg", plans=plan, site="cerro_toco", noise=False, progress_bars=False, **kwargs
+    )
+
+
+def test_cmb_map_input():
+    """Simulation(cmb=<HEALPixMap>) is accepted, as documented, and gives the same TOD as the generated CMB."""
+    from maria.map import HEALPixMap
+
+    tods = []
+    for kwargs in [{"cmb": "generate", "cmb_kwargs": {"nside": 32, "seed": 5}}, {"cmb": generate_cmb(nside=32, seed=5)}]:
+        np.random.seed(0)  # for the detector angles and the gain errors
+        tods.append(cmb_sim(**kwargs).run(units="uK_CMB")[0].signal.compute())
+    assert np.array_equal(*tods)
+
+    # a temperature-only map (without a stokes axis) of a uniform 100 uK_CMB anisotropy
+    uniform = HEALPixMap(data=1e-4 * np.ones(hp.nside2npix(16)), units="K_CMB")
+    assert np.allclose(cmb_sim(cmb=uniform).run(units="uK_CMB")[0].signal.compute(), 100, rtol=1e-3)
+
+    with pytest.raises(ValueError, match="cmb_kwargs"):
+        cmb_sim(cmb=uniform, cmb_kwargs={"nside": 16})
