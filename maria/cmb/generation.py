@@ -24,7 +24,11 @@ CMB_SOURCES = {
 }
 
 
-def get_cmb_spectrum(source="camb"):
+def get_cmb_spectrum(source="lensed"):
+    """
+    The CMB power spectrum table: "lensed" (the lensed Planck spectrum, used by generate_cmb) or "camb" (whose
+    columns are mislabelled; its TT is 7-29% above the lensed one below ell 1000).
+    """
     cmb_spectrum_path = fetch(
         CMB_SOURCES[source]["spectrum"],
         max_age=CMB_SPECTRUM_CACHE_MAX_AGE,
