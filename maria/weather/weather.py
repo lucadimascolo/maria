@@ -58,6 +58,9 @@ def read_weather_quantile_data(path: str, fields: list[str] = None):
     return qdata
 
 
+_VALID_WEATHER_OVERRIDES = ["pwv"]
+
+
 class Weather:
     def __init__(
         self,
@@ -78,6 +81,10 @@ class Weather:
         self.region = region
         self.quantiles = quantiles
         self.override = override
+
+        invalid_overrides = [key for key in override if key not in _VALID_WEATHER_OVERRIDES]
+        if invalid_overrides:
+            raise ValueError(f"Invalid weather overrides {invalid_overrides}; valid ones are {_VALID_WEATHER_OVERRIDES}.")
         self.source = source
 
         time = time if time is not None else arrow.now().to("utc")
