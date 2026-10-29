@@ -453,9 +453,10 @@ class ProjectionMap(Map):
     def _pad_with_zero_sky(self, radius: float, offsets=None):
         """
         The map with zero sky (and, for a weighted map, the weight of the nearest edge pixel, as _smooth gives it with
-        zero_outside) beyond its edges, out to at least `radius` (in radians) past the outer pixel centres. Given the
-        (xi, eta) offsets (in radians) of the samples, it is padded only as far as they reach beyond the outer pixel
-        centres (and at most `radius`): _smooth with zero_outside gives the pixels the same values either way.
+        zero_outside) in its pixels without data (of zero weight) and beyond its edges, out to at least
+        `radius` (in radians) past the outer pixel centres. Given the (xi, eta) offsets (in radians) of the samples,
+        it is padded only as far as they reach beyond the outer pixel centres (and at most `radius`): _smooth with
+        zero_outside gives the pixels the same values either way.
         """
         package = self.package()
         pad_width = [(0, 0)] * (self.ndim - 2)
@@ -477,9 +478,25 @@ class ProjectionMap(Map):
             )
             pad_width.append(tuple(n_pad))
 
-        package["data"] = da.pad(da.asarray(self.data), pad_width=pad_width, mode="constant", constant_values=0)
-        if "weight" in package:
-            package["weight"] = da.pad(da.asarray(package["weight"]), pad_width=pad_width, mode="edge")
+        data, weight = self.data, package.get("weight")
+        # pixels without data (of zero weight) are no sky either: zero sky with the weight of the nearest pixel with
+        # data, as beyond the edges
+        no_data = np.asarray(self.weight == 0)
+        if no_data.any():
+            data = np.where(no_data, 0, data)
+            if weight is not None:
+                weight = np.asarray(weight).copy().reshape(-1, *no_data.shape[-2:])
+                for w, mask in zip(weight, no_data.reshape(weight.shape)):
+                    if mask.all():
+                        w[:] = 1
+                    elif mask.any():
+                        nearest = sp.ndimage.distance_transform_edt(mask, return_distances=False, return_indices=True)
+                        w[:] = w[tuple(nearest)]
+                weight = weight.reshape(no_data.shape)
+
+        package["data"] = da.pad(da.asarray(data), pad_width=pad_width, mode="constant", constant_values=0)
+        if weight is not None:
+            package["weight"] = da.pad(da.asarray(weight), pad_width=pad_width, mode="edge")
 
         return type(self)(**package)
 
