@@ -96,6 +96,12 @@ class Weather:
 
         self.qdata = read_weather_quantile_data(self.cache_path)
 
+        invalid_quantiles = [key for key in quantiles if key not in self.qdata["levels"]]
+        if invalid_quantiles:
+            raise ValueError(
+                f"Invalid weather quantiles {invalid_quantiles}; valid ones are {list(self.qdata['levels'].keys())}."
+            )
+
         self.default_units = {
             **self.qdata["metadata"]["units"],
             "air_density": "kg m^-3",

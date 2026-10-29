@@ -85,3 +85,9 @@ def test_low_wind_timestep_unchanged_when_long_enough():
     duration = np.ptp(obs.boresight.t)
     assert duration / 4 < master_timestep < duration / 3  # a cap at a quarter of the observation would change it
     assert atmosphere.timestep == master_timestep
+
+
+def test_unknown_site_weather_quantiles_raise():
+    site = maria.Site(region="green_bank", altitude=825, weather_quantiles={"pwv": 0.9})
+    with pytest.raises(ValueError, match="pwv"):
+        atmosphere_sim(small_instrument(n=4, field_of_view=0.05), stare_plan(duration=3), site=site)
