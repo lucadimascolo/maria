@@ -214,41 +214,6 @@ class Plan:
 
         return self
 
-        # TODO: scan speed checks in az/el frame
-
-        # scan_velocity = np.gradient(
-        #     self.scan_offsets,
-        #     axis=1,
-        #     edge_order=0,
-        # ) / np.gradient(self.time)
-
-        # scan_acceleration = np.gradient(
-        #     scan_velocity,
-        #     axis=1,
-        #     edge_order=0,
-        # ) / np.gradient(self.time)
-
-        # self.max_vel_deg = np.degrees(np.sqrt(np.sum(scan_velocity**2, axis=0)).max())
-        # self.max_acc_deg = np.degrees(np.sqrt(np.sum(scan_acceleration**2, axis=0)).max())
-
-        # if self.max_vel_deg > MAX_VELOCITY_WARN:
-        #     logger.warning(
-        #         (
-        #             f"The maximum velocity of the boresight ({self.max_vel_deg:.01f} deg/s) is "
-        #             "physically unrealistic. If this is undesired, double-check the parameters for your scan strategy."
-        #         ),
-        #         stacklevel=2,
-        #     )
-
-        # if self.max_acc_deg > MAX_ACCELERATION_WARN:
-        #     logger.warning(
-        #         (
-        #             f"The maximum acceleration of the boresight ({self.max_acc_deg:.01f} deg/s^2) is "
-        #             "physically unrealistic. If this is undesired, double-check the parameters for your scan strategy."
-        #         ),
-        #         stacklevel=2,
-        #     )
-
     def __init__(
         self,
         time: float,
