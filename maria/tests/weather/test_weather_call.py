@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from maria.units import Quantity
 from maria.weather import Weather
 
@@ -20,3 +21,9 @@ def test_wind_bearing_is_the_direction_the_wind_blows_from():
         levels["wind_east"] = Quantity(np.full(n, wind_east), "m/s")
         levels["wind_north"] = Quantity(np.full(n, wind_north), "m/s")
         assert np.allclose(np.degrees(weather.wind_bearing) % 360, bearing_deg)
+
+
+def test_unknown_weather_quantiles_raise():
+    """A quantile for a field the weather does not have (e.g. "pwv") used to be ignored silently."""
+    with pytest.raises(ValueError, match="pwv"):
+        Weather(region="chajnantor", time="2026-01-15T04:00:00+00:00", quantiles={"pwv": 0.9})
