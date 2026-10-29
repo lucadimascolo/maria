@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import maria
 import numpy as np
+import pytest
 from maria import Simulation
 from maria.noise import generate_noise_with_knee
 from maria.plan import get_plan
@@ -164,3 +165,9 @@ def test_observations_and_bands_are_independent():
     f090, f150 = noises[0][band_name == "f090"], noises[0][band_name == "f150"]
     band_corr = whitened_correlation(f090, f150, sample_rate, knee=2.0, f_max=1.0).mean()
     assert np.abs(band_corr) < 0.1, f"correlation between bands: {band_corr:.3f}"
+
+
+def test_invalid_noise_kwargs_raise():
+    plan = get_plan("ten_second_zenith_stare", duration=5, sample_rate=10)
+    with pytest.raises(ValueError, match="noise_kwargs"):
+        Simulation(instrument="test/1deg", plans=plan, site="llano_de_chajnantor", noise_kwargs={"corr_prop": 0.1})

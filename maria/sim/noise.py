@@ -15,6 +15,13 @@ class NoiseMixin:
     def _run(self):
         self._simulate_noise()
 
+    def _init_noise(self):
+        invalid_kwargs = [key for key in self.noise_kwargs if key not in DEFAULT_NOISE_SIM_KWARGS]
+        if invalid_kwargs:
+            raise ValueError(
+                f"Invalid noise_kwargs {invalid_kwargs}; valid ones are {list(DEFAULT_NOISE_SIM_KWARGS.keys())}."
+            )
+
     def _simulate_noise(self, obs):
 
         noise_loading = np.zeros(shape=obs.shape, dtype=self.dtype)
