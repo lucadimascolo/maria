@@ -198,6 +198,32 @@ def test_fits_spectral_and_stokes_axes(tmp_path):
     assert list(m2.stokes) == ["Q", "U", "V"]
 
 
+@pytest.mark.parametrize("keyword", ["RESTFRQ", "RESTFREQ", "FREQ"])
+def test_fits_frequency_keyword_does_not_override_the_axis(tmp_path, keyword):
+    """A cube with a frequency axis keeps it when its header also has a (rest) frequency keyword."""
+    w = WCS(naxis=3)
+    w.wcs.ctype = ["RA---ARC", "DEC--ARC", "FREQ"]
+    w.wcs.crval = [150.0, -30.0, 90e9]
+    w.wcs.cdelt = [-0.01, 0.01, 10e9]
+    w.wcs.crpix = [4.5, 4.5, 1.0]
+    w.wcs.cunit = ["deg", "deg", "Hz"]
+    header = w.to_header()
+    header[keyword] = 115.27e9
+    path = str(tmp_path / "cube.fits")
+    write_image(path, np.zeros((3, 8, 8)), header)
+    assert np.allclose(maria.map.load(path, units="K_RJ").nu.Hz, [90e9, 100e9, 110e9])
+
+    # a single-channel frequency axis also takes precedence over the keyword
+    write_image(path, np.zeros((1, 8, 8)), header)
+    assert np.allclose(maria.map.load(path, units="K_RJ").nu.Hz, [90e9])
+
+    # without a frequency axis, the keyword gives the frequency of the map
+    header = w.celestial.to_header()
+    header[keyword] = 115.27e9
+    write_image(path, np.zeros((8, 8)), header)
+    assert np.allclose(maria.map.load(path, units="K_RJ").nu.Hz, [115.27e9])
+
+
 def test_fits_single_channel_wcs(tmp_path):
     """A single-channel map writes a non-singular WCS."""
     m = ProjectionMap(data=np.zeros((1, 8, 8)), nu=[150e9], resolution=0.01, units="K_RJ")
