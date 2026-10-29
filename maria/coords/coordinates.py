@@ -338,7 +338,7 @@ class Coordinates:
             earth_location=self.earth_location,
             frame=self.frame.name,
             dtype=self.dtype,
-        )
+        )._with_fit_reference(self._fit_reference or self._center_track(self._phi, self._theta))
 
     def boresight(self):
         cphi, ctheta = get_center_phi_theta(self._phi, self.theta, keep_dims=(-1,))
@@ -387,6 +387,11 @@ class Coordinates:
 
     def compute_points(self):
         return phi_theta_to_xyz(self._phi, self._theta)
+
+    def _with_fit_reference(self, reference):
+        """Fit the transforms around `reference` (e.g. that of the coordinates this was derived from)."""
+        self._fit_reference = reference
+        return self
 
     def _center_track(self, phi, theta):
         """
