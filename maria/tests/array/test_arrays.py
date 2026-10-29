@@ -40,3 +40,22 @@ array_configs_to_test = [arrays1, arrays2, arrays3]
 @pytest.mark.parametrize("array_config", array_configs_to_test)
 def test_generate_array(array_config):
     instrument = maria.Instrument(arrays=array_config)
+
+
+def test_plot_gammas_follow_the_stokes_weights():
+    """plot(plot_gammas=True) draws each detector along its polarization: gamma = 0 couples to +Q (north-south,
+    along eta at transit) and gamma = 45 deg to +U (towards -xi), so the line is along (-sin gamma, cos gamma)."""
+    instrument = maria.get_instrument(
+        array={"n": 10, "field_of_view": 0.1, "bands": ["act/pa5/f150"], "primary_size": 6, "polarized": True}
+    )
+    dets = instrument.dets
+    dets.plot(plot_gammas=True)
+    lines = [line for line in plt.gcf().axes[0].get_lines() if len(line.get_xdata()) == 2]
+    x = np.stack([line.get_xdata() for line in lines], axis=-1)
+    y = np.stack([line.get_ydata() for line in lines], axis=-1)
+    assert x.shape == (2, dets.n)
+    direction = np.stack([x[1] - x[0], y[1] - y[0]])
+    direction /= np.linalg.norm(direction, axis=0)
+    expected = np.stack([-np.sin(dets.gamma), np.cos(dets.gamma)])
+    assert np.allclose(np.abs(np.sum(direction * expected, axis=0)), 1)
+    plt.close("all")
