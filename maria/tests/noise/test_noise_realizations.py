@@ -171,3 +171,19 @@ def test_invalid_noise_kwargs_raise():
     plan = get_plan("ten_second_zenith_stare", duration=5, sample_rate=10)
     with pytest.raises(ValueError, match="noise_kwargs"):
         Simulation(instrument="test/1deg", plans=plan, site="llano_de_chajnantor", noise_kwargs={"corr_prop": 0.1})
+
+
+@pytest.mark.parametrize("beta", [0.5, 1.0, 2.0])
+def test_knee_is_where_pink_equals_white(beta):
+    """
+    The pink noise must have a two-sided PSD (knee / f) ** beta (in units of the white level), so that it equals the
+    white noise at f = knee for any beta (it used to be knee / f ** beta, with the crossover at knee ** (1 / beta)).
+    """
+    n_samples, sample_rate, knee = 2**15, 20.0, 0.3
+    x = generate_noise_with_knee(shape=(64, n_samples), sample_rate=sample_rate, knee=knee, beta=beta, seed=5)
+    f = np.fft.rfftfreq(n_samples, d=1 / sample_rate)
+    psd = (np.abs(np.fft.rfft(x, axis=-1)) ** 2 / (sample_rate * n_samples)).mean(axis=0)
+
+    m = (f > 0.05) & (f < 2.0)
+    ratio = psd[m] / (1 + (knee / f[m]) ** beta)
+    assert np.abs(ratio.mean() - 1) < 0.03, f"measured / model PSD = {ratio.mean():.3f}"

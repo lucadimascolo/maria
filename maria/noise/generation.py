@@ -31,9 +31,10 @@ def generate_noise_with_knee(
     # pink noise
     if knee > 0:
         f = np.fft.fftfreq(n=shape[-1], d=1 / sample_rate)
-        a = knee / 2
+        # a two-sided PSD of (knee / |f|) ** beta (in units of the white level), which equals the white noise at the
+        # knee for any beta
         with np.errstate(divide="ignore", invalid="ignore"):
-            pink_noise_power_spectrum = np.where(f != 0, a / (np.abs(f) ** beta), 0)
+            pink_noise_power_spectrum = np.where(f != 0, 0.5 * (knee / np.abs(f)) ** beta, 0)
 
         weights = np.sqrt(2 * sample_rate * pink_noise_power_spectrum)
 
