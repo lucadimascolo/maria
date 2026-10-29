@@ -42,6 +42,29 @@ DEFAULT_EARTH_LOCATION = EarthLocation.from_geodetic(
 DEFAULT_TIMESTAMP = arrow.now().timestamp()
 
 
+def _unwrap_longitude(phi):
+    """Unwrap the longitude along the last axis, ignoring NaNs (a NaN does not propagate along the track).
+
+    Returns the unwrapped longitude, a boolean array over the leading axes that says which tracks cross the wrap, and
+    the maximum (finite) longitude of each track."""
+    phi = np.asarray(phi)
+    n = phi.shape[-1]
+    finite = np.isfinite(phi)
+    # compare each sample with the last finite sample before it
+    last_finite = np.maximum.accumulate(np.where(finite, np.arange(n), 0), axis=-1)
+    filled = np.take_along_axis(phi, last_finite, axis=-1)
+    step = np.diff(filled, axis=-1)
+    with np.errstate(invalid="ignore"):
+        jump = np.where(np.abs(step) > np.pi, -2 * np.pi * np.round(step / (2 * np.pi)), 0.0)
+    crosses = (jump != 0).any(axis=-1)
+    if not crosses.any():
+        return phi, crosses, np.zeros(crosses.shape)
+    correction = np.concatenate([np.zeros((*phi.shape[:-1], 1)), np.cumsum(jump, axis=-1)], axis=-1)
+    with np.errstate(invalid="ignore"):
+        phi_max = np.max(np.where(finite, phi, -np.inf), axis=-1)
+    return np.where(crosses[..., None], phi + correction, phi), crosses, phi_max
+
+
 class Coordinates:
     """
     A class for managing coordinates, allowing us to access different coordinate frames at once.
@@ -293,7 +316,15 @@ class Coordinates:
         n = int(np.ceil((self.t.max() - self.t.min()) / timestep))
         ds_t = self.t.min() + timestep * np.arange(n + 1)
         ds_t[-1] = max(ds_t[-1], self.t.max())  # guard against rounding at unix-time magnitudes
-        ds_phi = sp.interpolate.interp1d(self.t, self._phi, axis=-1, bounds_error=False, fill_value="extrapolate")(ds_t)
+        # interpolate the longitude across the 0/2π wrap: only the tracks that cross it are unwrapped (and wrapped
+        # back into their own range afterwards), so the others are interpolated exactly as before. A track that crosses
+        # the wrap is in [-π, π) if it never exceeds π, and in [0, 2π) otherwise: per-detector azimuths near north can
+        # dip slightly below 0 while the boresight is in [0, 2π)
+        phi, crosses, phi_max = _unwrap_longitude(self._phi)
+        ds_phi = sp.interpolate.interp1d(self.t, phi, axis=-1, bounds_error=False, fill_value="extrapolate")(ds_t)
+        if crosses.any():
+            lower = np.where(phi_max <= np.pi, -np.pi, 0.0)[crosses]
+            ds_phi[crosses] = (ds_phi[crosses] - lower[..., None]) % (2 * np.pi) + lower[..., None]
 
         ds_theta = sp.interpolate.interp1d(self.t, self._theta, axis=-1, bounds_error=False, fill_value="extrapolate")(ds_t)
 
