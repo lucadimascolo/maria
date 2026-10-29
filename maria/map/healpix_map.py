@@ -90,13 +90,21 @@ class HEALPixMap(Map):
         n_pixels = self.dims["pixels"]
         n_samples = coords.size
 
-        samples = np.arange(n_samples).reshape(coords.shape)
-        weights = np.ones_like(samples)
-
         # sample the map in its own frame
-        phi = getattr(coords, self.frame.phi_name)
-        theta = getattr(coords, self.frame.theta_name)
-        pixels = hp.pixelfunc.ang2pix(self.nside, theta=np.pi / 2 - theta, phi=phi)
+        phi = np.asarray(getattr(coords, self.frame.phi_name)).ravel()
+        theta = np.asarray(getattr(coords, self.frame.theta_name)).ravel()
+
+        # with the same (-1, *coords.shape) layout as a ProjectionMap
+        if bilinear:
+            # the four nearest pixels, with healpy's bilinear interpolation weights
+            pixels, weights = hp.pixelfunc.get_interp_weights(self.nside, theta=np.pi / 2 - theta, phi=phi)
+        else:
+            pixels = hp.pixelfunc.ang2pix(self.nside, theta=np.pi / 2 - theta, phi=phi)[None]
+            weights = np.ones(pixels.shape)
+
+        pixels = pixels.reshape(-1, *coords.shape)
+        weights = weights.reshape(-1, *coords.shape)
+        samples = np.arange(n_samples).reshape(coords.shape) + np.zeros_like(pixels)
 
         # add time index
         if self.dims.get("t", 0) > 1:

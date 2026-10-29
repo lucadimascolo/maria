@@ -3,6 +3,7 @@ from __future__ import annotations
 import healpy as hp
 import numpy as np
 import pytest
+import scipy as sp
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from maria.beam import compute_angular_fwhm
@@ -200,3 +201,30 @@ def test_smooth_frame_aliases_and_pol():
     m = HEALPixMap(data=iqu_galactic, stokes="IQU", units="K_RJ", frame="galactic")
     with pytest.raises(ValueError):
         m._smooth(fwhm=1.0, frame="ra/dec")
+
+
+def test_healpix_bilinear_sampling(simulate_map):
+    """bilinear_sampling=True interpolates a HEALPix map with healpy's bilinear weights (it was ignored)."""
+    nside = 32
+    m = HEALPixMap(data=np.random.default_rng(0).standard_normal(hp.nside2npix(nside)), units="K_RJ")
+    rng = np.random.default_rng(1)
+    ra, dec = rng.uniform(0, 2 * np.pi, (3, 20)), np.arcsin(rng.uniform(-1, 1, (3, 20)))
+    coords = Coordinates(phi=ra, theta=dec, t=1.7e9 + np.arange(20), frame="ra/dec")
+
+    def sample(bilinear):
+        samples, pixels, weights, n_pixels, n_samples = m._pointing_matrix_ingredients(coords, bilinear=bilinear)
+        P = sp.sparse.csr_array((weights.ravel(), (samples.ravel(), pixels.ravel())), shape=(n_samples, n_pixels))
+        return (P @ m.data.compute()).reshape(coords.shape)
+
+    data = m.data.compute()
+    assert np.allclose(sample(True), hp.get_interp_val(data, np.pi / 2 - dec, ra), rtol=1e-6)
+    assert np.array_equal(sample(False), data[hp.ang2pix(nside, np.pi / 2 - dec, ra)])
+
+    # in the simulation: a smooth (dipole) sky is sampled more accurately with bilinear sampling
+    m = HEALPixMap(data=1e-2 * hp.pix2vec(nside, np.arange(hp.nside2npix(nside)))[2], units="K_RJ")
+    errors = {}
+    for bilinear in [False, True]:
+        tod = simulate_map(m, map_kwargs={"bilinear_sampling": bilinear}, radius=1.0).run(units="K_RJ")[0]
+        expected = 1e-2 * np.sin(np.asarray(tod.coords.dec))
+        errors[bilinear] = np.abs(tod.signal.compute() - expected).max()
+    assert errors[True] < 0.2 * errors[False]
