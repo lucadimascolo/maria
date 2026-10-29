@@ -54,6 +54,10 @@ class MapMixin:
         if "stokes" not in m.dims:
             m = m.unsqueeze("stokes")
 
+        # Q and U of a galactic map are referred to celestial north together, so a lone Q (or U) gets a zero U (or Q)
+        if m.frame.name == "galactic" and len({"Q", "U"} & set(m.stokes)) == 1:
+            m = _with_both_q_and_u(m)
+
         if "nu" not in m.dims:
             m = m.unsqueeze("nu")
 
@@ -122,12 +126,15 @@ class MapMixin:
 
                 if isinstance(m, HEALPixMap):
                     # full-sky smoothing is slow, so do it once per beam and map data for all observations (Q and U
-                    # as a spin-2 field)
+                    # as a spin-2 field). Polarized galactic maps are rotated to ra/dec, so that Q and U of every map
+                    # refer to the same (celestial) north.
                     key = (map_name, float(band_fwhm.rad))
                     # (the map is kept with its data key, so that a new map or an edit of its data is not missed)
                     cached_map, cached_data, smoothed_map = self._smoothed_healpix_maps.get(key, (None, None, None))
                     if cached_map is not m or cached_data != m._data_key():
-                        smoothed_map = m._smooth(fwhm=band_fwhm, pol=True)
+                        polarized = "stokes" in m.dims and {"Q", "U"} <= set(m.stokes)
+                        frame = "ra/dec" if polarized and m.frame.name == "galactic" else None
+                        smoothed_map = m._smooth(fwhm=band_fwhm, pol=True, frame=frame)
                         self._smoothed_healpix_maps[key] = (m, m._data_key(), smoothed_map)
                 else:
                     smoothed_map = m.smooth(fwhm=band_fwhm)
@@ -139,7 +146,7 @@ class MapMixin:
                 pointing_s = ttime.monotonic()
 
                 # there is no sky signal beyond the edges of the input map
-                P = m[:, 0]._stokes_weighted_pointing_matrix(
+                P = smoothed_map[:, 0]._stokes_weighted_pointing_matrix(
                     coords=band_coords,
                     dets=band_dets,
                     bilinear=self.map_kwargs.get("bilinear_sampling", DEFAULT_MAP_SIM_KWARGS["bilinear_sampling"]),
@@ -259,3 +266,23 @@ class MapMixin:
             map_loading = sp.ndimage.convolve1d(map_loading, weights=np.array([0.25, 0.5, 0.25]), axis=-1)
 
             obs.loading[map_name] = da.asarray(map_loading, dtype=self.dtype)
+
+
+def _with_both_q_and_u(m: Map):
+    """
+    The map with only one of Q and U, with the other one added as a zero plane (with the weight and the beam of the
+    first one).
+    """
+    stokes = list(m.stokes)
+    present, missing = ("Q", "U") if "Q" in stokes else ("U", "Q")
+    new_stokes = sorted([*stokes, missing], key="IQUV".index)
+    index, source = new_stokes.index(missing), stokes.index(present)
+
+    package = m.package()
+    package["stokes"] = "".join(new_stokes)
+    package["data"] = np.insert(np.asarray(package["data"]), index, 0, axis=0)
+    for key in ["weight", "beam"]:
+        if key in package:
+            values = np.asarray(package[key])
+            package[key] = np.insert(values, index, values[source], axis=0)
+    return type(m)(**package)
