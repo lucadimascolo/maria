@@ -202,13 +202,17 @@ def parse_fits_map_header(header):
             # center the map on the sky position of its middle pixel
             center = _compute_fits_map_center(header, spatial_axes["xi"], spatial_axes["eta"], default=center)
 
+    # a keyword (like RESTFRQ, the rest frequency of a line) does not override an axis of the data, even a
+    # single-channel one: a FREQ axis of size 1 gives the frequency of the map, and RESTFRQ is then ignored
+    data_axes = set(axes)
     for key, value in header.items():
         for kwarg, aliases in FITS_KWARG_ALIASES.items():
             for alias in aliases:
                 if key == alias:
                     logger.debug(f"Using {alias}: {value} for kwarg '{kwarg}'")
                     if kwarg in ["nu", "z"]:
-                        axes[kwarg] = Quantity([value], FITS_DEFAULT_UNITS[kwarg])
+                        if kwarg not in data_axes:
+                            axes[kwarg] = Quantity([value], FITS_DEFAULT_UNITS[kwarg])
                     else:
                         kwargs[kwarg] = value
                     break
