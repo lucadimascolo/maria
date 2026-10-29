@@ -6,7 +6,7 @@ import astropy as ap
 import numpy as np
 import scipy as sp
 
-from ..coords import Coordinates
+from ..coords import Coordinates, Frame
 from ..errors import NoSuitablePlansError, PointingError
 from ..site import Site, get_site
 from ..units import Quantity
@@ -53,6 +53,9 @@ class Planner:
             elif key == "hour":
                 self.constraints[key] = value
             elif key == "min_sun_distance":
+                # the sun distance of a target fixed in az/el changes during the day and is not computed
+                if Frame(self.target.frame).name == "az/el":
+                    raise ValueError("'min_sun_distance' needs a target in a sky frame (ra/dec or galactic), not az/el")
                 self.constraints[key] = Quantity(value, "deg")
             else:
                 raise ValueError(f"constraint keys must be one of {CONSTRAINT_KEYS}")
