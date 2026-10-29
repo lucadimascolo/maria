@@ -258,3 +258,46 @@ def test_summary():
 
     assert list(summary.index) == ["az", "el", "ra", "dec"]
     assert summary.loc["el", "mean"].startswith("45.0")
+
+
+@pytest.mark.parametrize("throw", [2.0, 10.0, 20.0])
+def test_downsample_keeps_the_fit_reference(throw):
+    """A downsampled subset fitted its transform around its own centre instead of the boresight (0.05-0.13")."""
+    t = T0 + np.arange(0, 600, 0.5)
+    az = 180.0 + throw * np.sin(2 * np.pi * t / 60.0)
+    offsets = np.radians([[0.0, 0.0], [1.5, 1.5], [-1.5, 1.0]])
+    sub = boresight(t, az, 50.0).broadcast(offsets)[1:]
+    ds = sub.downsample(factor=2)
+    n = min(ds.t.shape[-1], sub.t[::2].shape[-1])
+    assert np.allclose(ds.t[:n], sub.t[::2][:n])
+
+    err = separation_arcsec(ds.ra[:, :n], ds.dec[:, :n], sub.ra[:, ::2][:, :n], sub.dec[:, ::2][:, :n])
+    assert err.max() < 1e-3, f"max difference {err.max():.4f} arcsec"
+
+
+@pytest.mark.parametrize("throw, spread", [(10.0, 5.0), (20.0, 10.0)])
+def test_downsampled_slice_does_not_depend_on_a_prior_transform(throw, spread):
+    """A slice of coordinates without a fit reference took the centre of its parent only if the parent had not been
+    transformed yet, so a downsampled slice fitted around its own centre after e.g. `coords.ra` (0.07/0.25")."""
+    t = T0 + np.arange(0, 600, 0.5)
+    az = 180.0 + throw * np.sin(2 * np.pi * t / 60.0)
+    daz, delev = np.array([0.0, spread, -spread])[:, None], np.array([0.0, spread, spread / 2])[:, None]
+
+    def coords():  # built directly, so without a fit reference
+        return Coordinates(
+            phi=np.radians(az + daz),
+            theta=np.radians(50.0 + delev) * np.ones_like(t),
+            t=t,
+            earth_location=get_site("cerro_toco").earth_location,
+            frame="az/el",
+        )
+
+    transformed = coords()
+    transformed.ra  # noqa: B018 (initializes the transforms)
+    ds = transformed[1:].downsample(factor=2)
+    ref = coords()[1:].downsample(factor=2)
+    full = coords().downsample(factor=2)[1:]
+
+    for other in [ref, full]:
+        err = separation_arcsec(ds.ra, ds.dec, other.ra, other.dec)
+        assert err.max() < 1e-3, f"max difference {err.max():.4f} arcsec"
