@@ -82,6 +82,11 @@ class MapMixin:
         parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in m.dims}
         m.apply_parity(**parity_signature)
 
+        # pixels without data (NaN, or of zero weight) are no sky, in each Stokes plane in the frame of the map, so they
+        # are filled before Q and U are rotated (a missing U is U = 0 there)
+        if isinstance(m, ProjectionMap):
+            m = m._fill_no_data()
+
         # Q and U of every map refer to celestial north (those of galactic HEALPix maps are rotated when smoothed)
         if isinstance(m, ProjectionMap) and m.frame.name == "galactic" and {"Q", "U"} <= set(m.stokes):
             _rotate_polarization_basis(m, from_frame="galactic", to_frame="ra/dec")

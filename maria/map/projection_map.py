@@ -492,14 +492,41 @@ class ProjectionMap(Map):
             beam=self.beam,
         )
 
+    def _fill_no_data(self):
+        """
+        The map with zero sky in its pixels without data (of zero weight), in each Stokes plane on its own: their
+        data are set to zero and, in a weighted map, they get the weight of the nearest pixel with data in that plane,
+        as beyond the edges in _pad_with_zero_sky. A map without such pixels is returned as it is.
+        """
+        no_data = np.asarray(self.weight == 0)
+        if not no_data.any():
+            return self
+
+        package = self.package()
+        package["data"] = np.where(no_data, 0, self.data)
+        if "weight" in package:
+            weight = np.asarray(package["weight"]).copy().reshape(-1, *no_data.shape[-2:])
+            for w, mask in zip(weight, no_data.reshape(weight.shape)):
+                if mask.all():
+                    w[:] = 1
+                elif mask.any():
+                    nearest = sp.ndimage.distance_transform_edt(mask, return_distances=False, return_indices=True)
+                    w[:] = w[tuple(nearest)]
+            package["weight"] = weight.reshape(no_data.shape)
+
+        return type(self)(**package)
+
     def _pad_with_zero_sky(self, radius: float, offsets=None):
         """
         The map with zero sky (and, for a weighted map, the weight of the nearest edge pixel, as _smooth gives it with
-        zero_outside) beyond its edges, out to at least `radius` (in radians) past the outer pixel centres. Given the
-        (xi, eta) offsets (in radians) of the samples, it is padded only as far as they reach beyond the outer pixel
-        centres (and at most `radius`): _smooth with zero_outside gives the pixels the same values either way.
+        zero_outside) in its pixels without data (of zero weight, see _fill_no_data) and beyond its edges, out to
+        at least `radius` (in radians) past the outer pixel centres. Given the (xi, eta) offsets (in radians) of
+        the samples, it is padded only as far as they reach beyond the outer pixel centres (and at most `radius`):
+        _smooth with zero_outside gives the pixels the same values either way.
         """
-        package = self.package()
+        # (the simulation fills the pixels without data before it refers Q and U to celestial north)
+        filled = self._fill_no_data()
+        package = filled.package()
         pad_width = [(0, 0)] * (self.ndim - 2)
         for dim, offset_index in [("eta", 1), ("xi", 0)]:
             side = getattr(self, dim).deg
@@ -519,7 +546,7 @@ class ProjectionMap(Map):
             )
             pad_width.append(tuple(n_pad))
 
-        package["data"] = da.pad(da.asarray(self.data), pad_width=pad_width, mode="constant", constant_values=0)
+        package["data"] = da.pad(da.asarray(filled.data), pad_width=pad_width, mode="constant", constant_values=0)
         if "weight" in package:
             package["weight"] = da.pad(da.asarray(package["weight"]), pad_width=pad_width, mode="edge")
 
