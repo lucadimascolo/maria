@@ -15,6 +15,9 @@ from .base import Map
 
 here, this_filename = os.path.split(__file__)
 
+# the frames that healpy can rotate between
+_HEALPY_COORD = {"galactic": "G", "ra/dec": "C"}
+
 
 class HEALPixMap(Map):
     """
@@ -162,10 +165,12 @@ class HEALPixMap(Map):
         inplace: bool = False,
         degrees: bool = True,
         pol: bool = False,
+        frame: str = None,
     ):
         """
         smooth(), which can also smooth Q and U as a spin-2 field (pol=True, as healpy.smoothing(pol=True)) instead
-        of as scalar maps, as the simulation does.
+        of as scalar maps, and rotate the map (and its weight) to another frame ("ra/dec" or "galactic"), as the
+        simulation does. Q and U are then referred to the north of that frame, which needs pol=True.
         """
         if not (sigma is None) ^ (fwhm is None):
             raise ValueError("You must supply exactly one of 'sigma' or 'fwhm'.")
@@ -177,6 +182,14 @@ class HEALPixMap(Map):
 
         # stokes is always the first dimension when present
         stokes = list(self.stokes) if "stokes" in self.dims else []
+
+        frame = Frame(frame).name if frame is not None else self.frame.name
+        if frame != self.frame.name:
+            if not {frame, self.frame.name} <= _HEALPY_COORD.keys():
+                raise ValueError(f"Cannot rotate a HEALPix map from '{self.frame.name}' to '{frame}'.")
+            if ({"Q", "U"} & set(stokes)) and not (pol and {"Q", "U"} <= set(stokes)):
+                raise ValueError("Rotating Q and U to another frame needs both of them and pol=True.")
+
         maps = np.asarray(self.data).reshape(max(len(stokes), 1), -1, self.npix)
 
         groups = [[i] for i in range(len(maps))]
@@ -188,7 +201,7 @@ class HEALPixMap(Map):
         smoothed_maps = np.zeros_like(maps)
         for k in range(maps.shape[1]):
             for group in groups:
-                smoothed = self._smooth_slice(maps, group, k, sigma.radians)
+                smoothed = self._smooth_slice(maps, group, k, sigma.radians, frame)
                 for i, smoothed_map in zip(group, smoothed):
                     if i is not None:
                         smoothed_maps[i, k] = smoothed_map
@@ -198,13 +211,21 @@ class HEALPixMap(Map):
         beam, beam_area_ratio = self._smoothed_beam(sigma)
         data = data * beam_area_ratio
 
+        weight = self.weight
+        if frame != self.frame.name:
+            rotator = hp.Rotator(coord=[_HEALPY_COORD[self.frame.name], _HEALPY_COORD[frame]])
+            weight = np.stack([rotator.rotate_map_pixel(w) for w in np.asarray(weight).reshape(-1, self.npix)])
+            weight = weight.reshape(self.weight.shape).astype(self.weight.dtype)
+
         if inplace:
             self.data = da.asarray(data)
+            self.weight = da.asarray(weight)
             self.beam = Quantity(beam, "deg")
+            self.frame = Frame(frame)
 
         else:
             package = self.package()
-            package.update({"data": data, "beam": beam})
+            package.update({"data": data, "weight": weight, "beam": beam, "frame": frame})
             return type(self)(**package)
 
     def _data_key(self):
@@ -214,22 +235,26 @@ class HEALPixMap(Map):
         """
         return dask.base.tokenize(self.data)
 
-    def _smooth_slice(self, maps, indices, k, sigma):
+    def _smooth_slice(self, maps, indices, k, sigma, frame):
         """
         healpy.smoothing of the maps[indices, k] (a spin-2 field if there are three of them; with healpy's default
-        lmax = 3 nside - 1 and iter = 3), with the spherical harmonic transform cached on the map, so that smoothing
-        with several beams (e.g. one per band) does it once.
+        lmax = 3 nside - 1 and iter = 3), rotated to the frame, with the (rotated) spherical harmonic transform cached
+        on the map, so that smoothing with several beams (e.g. one per band) does it once. A Gaussian beam is
+        isotropic, so smoothing and rotating commute.
         """
         if getattr(self, "_alm_cache_data", None) != self._data_key():
             self._alm_cache, self._alm_cache_data = {}, self._data_key()
 
         lmax = 3 * self.nside - 1
         pol = len(indices) == 3
-        key = (tuple(indices), k)
+        key = (tuple(indices), k, frame)
         if key not in self._alm_cache:
             m = np.stack([maps[i, k] if i is not None else np.zeros(self.npix, dtype=maps.dtype) for i in indices])
             m[np.isnan(m)] = hp.UNSEEN  # NaN pixels are masked, like healpy's UNSEEN ones (which it sets to zero)
-            self._alm_cache[key] = hp.sphtfunc.map2alm(m if pol else m[0], lmax=lmax, iter=3, pol=pol)
+            alm = hp.sphtfunc.map2alm(m if pol else m[0], lmax=lmax, iter=3, pol=pol)
+            if frame != self.frame.name:
+                alm = hp.Rotator(coord=[_HEALPY_COORD[self.frame.name], _HEALPY_COORD[frame]]).rotate_alm(alm, lmax=lmax)
+            self._alm_cache[key] = alm
         alm = hp.sphtfunc.smoothalm(self._alm_cache[key], sigma=sigma, pol=pol, inplace=False)
         return np.atleast_2d(hp.sphtfunc.alm2map(alm, nside=self.nside, lmax=lmax, pol=pol))
 

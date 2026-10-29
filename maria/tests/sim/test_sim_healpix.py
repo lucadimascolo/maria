@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import healpy as hp
 import numpy as np
+import pytest
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from maria.beam import compute_angular_fwhm
@@ -77,3 +78,96 @@ def test_galactic_healpix_map():
 
     _, pixels, _, _, _ = m._pointing_matrix_ingredients(coords=coords)
     assert np.allclose(m.data.compute()[np.asarray(pixels).ravel()], [1.0, 0.0])
+
+
+def polarized_sky(nside, lmax, seed=0):
+    """A band-limited IQU sky in ra/dec, and the same sky expressed in galactic coordinates."""
+    ell = np.arange(lmax + 1)
+    cl = np.zeros((4, lmax + 1))
+    cl[:3, 2:] = 1e-6 / ell[2:] ** 2  # TT, EE, BB
+    np.random.seed(seed)
+    iqu_radec = hp.synfast(cl, nside, lmax=lmax, new=True)
+    iqu_galactic = hp.Rotator(coord=["C", "G"]).rotate_map_alms(iqu_radec, lmax=lmax)
+    return iqu_radec, iqu_galactic
+
+
+def test_galactic_polarized_map_is_rotated():
+    """Q and U of a galactic map refer to galactic north; smoothing it to ra/dec refers them to celestial north."""
+    nside, lmax, fwhm = 64, 64, 2.0
+    iqu_radec, iqu_galactic = polarized_sky(nside, lmax)
+    m = HEALPixMap(data=iqu_galactic, stokes="IQU", units="K_RJ", frame="galactic")
+    smoothed = m._smooth(fwhm=fwhm, pol=True, frame="ra/dec")
+    assert smoothed.frame.name == "ra/dec"
+    expected = hp.smoothing(iqu_radec, fwhm=np.radians(fwhm), pol=True, lmax=lmax)
+    got = np.asarray(smoothed.data).reshape(3, -1)
+    for stokes, g, e in zip("IQU", got, expected):
+        assert np.std(g - e) < 1e-2 * np.std(e), stokes
+
+
+def test_galactic_polarized_map_in_the_simulation(simulate_map):
+    """The same polarized sky given in galactic or in ra/dec coordinates gives the same TOD."""
+    import maria
+    from maria.instrument import Band
+
+    nside, lmax = 64, 64
+    iqu_radec, iqu_galactic = polarized_sky(nside, lmax)
+    band = Band(center=150e9, width=10e9, NET_RJ=1e-5)
+    instrument = maria.get_instrument(
+        array={"n": 7, "field_of_view": 0.5, "bands": [band], "primary_size": 1, "polarized": True}
+    )
+    tods = [
+        simulate_map(HEALPixMap(data=iqu, stokes="IQU", units="K_RJ", frame=frame), instrument=instrument, radius=1.0)
+        .run(units="K_RJ")[0]
+        .signal.compute()
+        for iqu, frame in [(iqu_radec, "ra/dec"), (iqu_galactic, "galactic")]
+    ]
+    assert np.std(tods[1] - tods[0]) < 2e-2 * np.std(tods[0])
+
+
+def test_galactic_polarized_map_is_rotated_once(simulate_map, monkeypatch):
+    """Smoothing and rotating commute, so the harmonic coefficients are rotated once, whatever the number of bands."""
+    import maria
+    from maria.instrument import Band
+
+    calls = []
+    rotate_alm = hp.Rotator.rotate_alm
+
+    def counting_rotate_alm(self, *args, **kwargs):
+        calls.append(1)
+        return rotate_alm(self, *args, **kwargs)
+
+    monkeypatch.setattr(hp.Rotator, "rotate_alm", counting_rotate_alm)
+
+    _, iqu_galactic = polarized_sky(nside=32, lmax=32)
+    bands = [Band(center=nu, width=10e9, NET_RJ=1e-5) for nu in (90e9, 150e9)]
+    array = {"n": 2, "field_of_view": 0.5, "bands": bands, "primary_size": 1, "polarized": True}
+    instrument = maria.get_instrument(array=array)
+    m = HEALPixMap(data=iqu_galactic, stokes="IQU", units="K_RJ", frame="galactic")
+    calls.clear()
+    simulate_map(m, instrument=instrument, duration=2).run()
+    assert len(calls) == 1
+
+
+def test_smooth_frame_rotates_the_weight():
+    """The weight is rotated with the map: a weight on the northern galactic hemisphere stays there."""
+    nside = 32
+    theta, phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))
+    weight = (theta < np.pi / 2).astype(float)  # galactic latitude > 0
+    m = HEALPixMap(data=np.ones_like(weight), weight=weight, units="K_RJ", frame="galactic")
+    smoothed = m._smooth(fwhm=1.0, frame="ra/dec")
+
+    b = np.pi / 2 - hp.Rotator(coord=["C", "G"])(theta, phi)[0]  # galactic latitude of each ra/dec pixel
+    w, edge = np.asarray(smoothed.weight), 2 * hp.nside2resol(nside)
+    assert (w[b > edge] == 1).all() and (w[b < -edge] == 0).all()
+
+
+def test_smooth_frame_aliases_and_pol():
+    """_smooth(frame=...) takes any name of a frame, and does not rotate Q and U as scalars."""
+    _, iqu_galactic = polarized_sky(nside=16, lmax=16)
+    m = HEALPixMap(data=iqu_galactic[0], units="K_RJ", frame="galactic")
+    assert m._smooth(fwhm=1.0, frame="icrs").frame.name == "ra/dec"
+    assert m._smooth(fwhm=1.0, frame="glon/glat").frame.name == "galactic"
+
+    m = HEALPixMap(data=iqu_galactic, stokes="IQU", units="K_RJ", frame="galactic")
+    with pytest.raises(ValueError):
+        m._smooth(fwhm=1.0, frame="ra/dec")
