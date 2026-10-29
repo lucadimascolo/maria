@@ -16,7 +16,8 @@ from ..beam import compute_angular_fwhm
 from ..calibration import Calibration
 from ..constants import k_B
 from ..io import DEFAULT_BAR_FORMAT, DEFAULT_TIME_FORMAT, humanize_time
-from ..map import HEALPixMap, Map, get
+from ..map import HEALPixMap, Map, ProjectionMap, get
+from ..map.projection_map import _rotate_polarization_basis
 from ..units import Quantity
 
 here, this_filename = os.path.split(__file__)
@@ -80,6 +81,10 @@ class MapMixin:
 
         parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in m.dims}
         m.apply_parity(**parity_signature)
+
+        # Q and U of every map refer to celestial north (those of galactic HEALPix maps are rotated when smoothed)
+        if isinstance(m, ProjectionMap) and m.frame.name == "galactic" and {"Q", "U"} <= set(m.stokes):
+            _rotate_polarization_basis(m, from_frame="galactic", to_frame="ra/dec")
 
         self.maps["map"] = m
 

@@ -11,6 +11,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
 
@@ -23,6 +25,38 @@ from .base import Map
 
 here, this_filename = os.path.split(__file__)
 logger = logging.getLogger("maria")
+
+# the frames whose north Q and U can refer to
+_POLARIZATION_FRAMES = ("ra/dec", "galactic")
+
+
+def _rotate_polarization_basis(m, from_frame: str, to_frame: str):
+    """
+    Rotate Q and U of a ProjectionMap (inplace) from the basis of one frame to that of another ("ra/dec" or
+    "galactic"), at each pixel: by twice the position angle, in `to_frame`, of the north pole of `from_frame` (with
+    the COSMO convention of healpy, as for HEALPix maps).
+    """
+    from_frame, to_frame = Frame(from_frame).name, Frame(to_frame).name
+    if from_frame == to_frame:
+        return
+    if not {from_frame, to_frame, m.frame.name} <= set(_POLARIZATION_FRAMES):
+        raise ValueError(
+            f"Cannot rotate Q and U from '{from_frame}' to '{to_frame}' (in a '{m.frame.name}' map); "
+            f"only {list(_POLARIZATION_FRAMES)} are supported."
+        )
+    offsets = np.stack(np.meshgrid(m.xi.rad, m.eta.rad), axis=-1)
+    phi_theta = np.asarray(offsets_to_phi_theta(offsets, m.center[0].rad, m.center[1].rad))
+    pixels = SkyCoord(phi_theta[..., 0] * u.rad, phi_theta[..., 1] * u.rad, frame=Frame(m.frame).astropy_name).transform_to(
+        Frame(to_frame).astropy_name
+    )
+    pole = SkyCoord(0 * u.deg, 90 * u.deg, frame=Frame(from_frame).astropy_name).transform_to(Frame(to_frame).astropy_name)
+    psi = pixels.position_angle(pole).rad
+    cos, sin = np.cos(2 * psi), np.sin(2 * psi)
+
+    data = np.array(m.data)
+    iq, iu = (list(m.stokes).index(stokes) for stokes in "QU")
+    data[iq], data[iu] = cos * data[iq] + sin * data[iu], cos * data[iu] - sin * data[iq]
+    m.data = da.asarray(data)
 
 
 class ProjectionMap(Map):
@@ -371,7 +405,7 @@ class ProjectionMap(Map):
         pixel_area_factor = pixel_area_ratio ** -parse_units(self.units)["dimension_vector"]["pixel"]
 
         # the new map is on the other map's grid, so it is in the other map's frame
-        return type(self)(
+        resampled = type(self)(
             interpolate(self.data) * pixel_area_factor,
             weight=interpolate(self._weight) * pixel_area_factor**-2 if self._weight is not None else None,
             units=self.units,
@@ -380,6 +414,14 @@ class ProjectionMap(Map):
             **{dim: (getattr(other_map, dim) if dim in ["xi", "eta"] else getattr(self, dim)) for dim in self.dims},
             beam=self.beam,
         )
+
+        # and its Q and U refer to the north of that frame
+        if other_map.frame.name != self.frame.name and "stokes" in self.dims and {"Q", "U"} & set(self.stokes):
+            if not {"Q", "U"} <= set(self.stokes):
+                raise ValueError("Resampling Q or U to another frame needs both of them.")
+            _rotate_polarization_basis(resampled, from_frame=self.frame.name, to_frame=other_map.frame.name)
+
+        return resampled
 
     def recenter(self):
 

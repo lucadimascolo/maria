@@ -124,6 +124,106 @@ def test_galactic_polarized_map_in_the_simulation(simulate_map):
     assert np.std(tods[1] - tods[0]) < 2e-2 * np.std(tods[0])
 
 
+def test_galactic_polarized_projection_map(simulate_map):
+    """A galactic ProjectionMap gives the same polarized TOD as the same sky as a galactic HEALPixMap."""
+    import maria
+    from maria.instrument import Band
+    from maria.map import ProjectionMap
+
+    band = Band(center=150e9, width=10e9, NET_RJ=1e-5)
+    array = {"n": 4, "field_of_view": 0.02, "bands": [band], "primary_size": 6, "polarized": True}
+    instrument = maria.get_instrument(array=array)
+    galactic = SkyCoord(ra=CENTER[0] * u.deg, dec=CENTER[1] * u.deg).galactic
+    l0, b0 = galactic.l.deg, galactic.b.deg
+
+    # Q = 1 mK_RJ (referred to galactic north) around the scan, as a flat map and as a broad HEALPix bump
+    data = np.zeros((3, 64, 64))
+    data[1] = 1e-3
+    flat = ProjectionMap(data=data, stokes="IQU", resolution=0.01, center=(l0, b0), units="K_RJ", frame="galactic")
+    nside = 128
+    distance = hp.rotator.angdist(hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True), (l0, b0), lonlat=True)
+    bump = 1e-3 * np.exp(-0.5 * (distance / np.radians(10)) ** 2)
+    sphere = HEALPixMap(data=np.stack([0 * bump, bump, 0 * bump]), stokes="IQU", units="K_RJ", frame="galactic")
+
+    flat_tod, sphere_tod = (
+        simulate_map(m, instrument=instrument, radius=0.01, duration=5).run(units="K_RJ")[0].signal.compute().mean(axis=1)
+        for m in (flat, sphere)
+    )
+    assert np.abs(sphere_tod).max() > 5e-4
+    assert np.allclose(flat_tod, sphere_tod, atol=1e-5)
+
+
+def test_resampled_polarized_map(simulate_map):
+    """A polarized ra/dec ProjectionMap resampled onto a galactic grid has its Q and U referred to galactic north, so
+    it gives the same TOD as the ra/dec map (and resampled back, the same Q and U)."""
+    import maria
+    from maria.instrument import Band
+    from maria.map import ProjectionMap
+
+    band = Band(center=150e9, width=10e9, NET_RJ=1e-5)
+    array = {"n": 4, "field_of_view": 0.02, "bands": [band], "primary_size": 6, "polarized": True}
+    instrument = maria.get_instrument(array=array)
+    galactic = SkyCoord(ra=CENTER[0] * u.deg, dec=CENTER[1] * u.deg).galactic
+
+    data = np.zeros((3, 64, 64))
+    data[1], data[2] = 1e-3, 5e-4
+    radec = ProjectionMap(data=data, stokes="IQU", resolution=0.01, center=CENTER, units="K_RJ", frame="ra/dec")
+    grid = ProjectionMap(
+        data=np.zeros((3, 48, 48)),
+        stokes="IQU",
+        resolution=0.01,
+        center=(galactic.l.deg, galactic.b.deg),
+        units="K_RJ",
+        frame="galactic",
+    )
+    resampled = radec.resample(grid)
+    assert resampled.frame.name == "galactic"
+
+    radec_tod, resampled_tod = (
+        simulate_map(m, instrument=instrument, radius=0.01, duration=5).run(units="K_RJ")[0].signal.compute().mean(axis=1)
+        for m in (radec, resampled)
+    )
+    assert np.abs(radec_tod).max() > 5e-4
+    assert np.allclose(resampled_tod, radec_tod, atol=1e-6)
+
+    back = np.asarray(resampled.resample(radec).data)[:, 24:40, 24:40]
+    assert np.allclose(back[1], 1e-3, rtol=1e-4) and np.allclose(back[2], 5e-4, rtol=1e-4)
+
+    # a lone Q (or U) cannot be referred to another north
+    with pytest.raises(ValueError):
+        ProjectionMap(data=data[:2], stokes="IQ", resolution=0.01, center=CENTER, units="K_RJ").resample(grid)
+
+
+@pytest.mark.parametrize("stokes", ["IQ", "IU"])
+def test_galactic_projection_map_with_one_of_q_and_u(simulate_map, stokes):
+    """A galactic ProjectionMap with only Q (or U) gives the TOD of the map with a zero U (or Q): its polarization is
+    rotated to celestial north (it was sampled as it was). An ra/dec map is left as it is."""
+    import maria
+    from maria.instrument import Band
+    from maria.map import ProjectionMap
+
+    band = Band(center=150e9, width=10e9, NET_RJ=1e-5)
+    array = {"n": 4, "field_of_view": 0.02, "bands": [band], "primary_size": 6, "polarized": True}
+    instrument = maria.get_instrument(array=array)
+    galactic = SkyCoord(ra=CENTER[0] * u.deg, dec=CENTER[1] * u.deg).galactic
+    index = ["IQU".index(s) for s in stokes]
+    data = np.zeros((3, 64, 64))
+    data[index] = 1e-3
+
+    kwargs = {"resolution": 0.01, "center": (galactic.l.deg, galactic.b.deg), "units": "K_RJ", "frame": "galactic"}
+    full, lone = ProjectionMap(data=data, stokes="IQU", **kwargs), ProjectionMap(data=data[index], stokes=stokes, **kwargs)
+    full_tod, lone_tod = (
+        simulate_map(m, instrument=instrument, radius=0.01, duration=5).run(units="K_RJ")[0].signal.compute()
+        for m in (full, lone)
+    )
+    assert np.std(full_tod) > 0
+    assert np.allclose(lone_tod, full_tod, rtol=0, atol=1e-6 * np.std(full_tod))
+
+    kwargs.update(center=CENTER, frame="ra/dec")
+    radec = simulate_map(ProjectionMap(data=data[index], stokes=stokes, **kwargs), instrument=instrument)
+    assert "".join(radec.maps["map"].stokes) == stokes
+
+
 def test_galactic_polarized_map_is_rotated_once(simulate_map, monkeypatch):
     """Smoothing and rotating commute, so the harmonic coefficients are rotated once, whatever the number of bands."""
     import maria
