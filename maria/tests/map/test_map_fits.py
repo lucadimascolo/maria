@@ -291,3 +291,17 @@ def test_fits_read_old_maria_axes(tmp_path, dim, ctype, crval, cdelt, n, expecte
         assert list(values) == expected
     else:
         assert np.allclose(values.base_units_value, expected, rtol=0, atol=1e-3 * cdelt)
+
+
+@pytest.mark.parametrize("convention, sign", [(None, 1), ("COSMO", 1), ("IAU", -1)])
+def test_fits_polarization_convention(tmp_path, convention, sign):
+    """maria's Q and U are COSMO: it flips U of IAU files when it loads them, and reads other files unchanged."""
+    data = np.stack([np.full((8, 8), v) for v in (1.0, 2.0, 3.0)])
+    m = ProjectionMap(data=data, stokes="IQU", resolution=0.01, center=(150.0, -30.0), units="K_RJ")
+    header = m.header()
+    if convention is not None:
+        header["POLCCONV"] = convention
+    path = str(tmp_path / "pol.fits")
+    write_image(path, data, header)
+    loaded = maria.map.load(path).data.compute()
+    assert np.allclose(loaded, data * np.array([1, 1, sign])[:, None, None])

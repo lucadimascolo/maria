@@ -5,6 +5,7 @@ import os
 import re
 import warnings
 
+import dask.array as da
 import h5py
 import matplotlib as mpl
 import numpy as np
@@ -108,7 +109,17 @@ def load(filename: str, index: int = None, format: str = "auto", **map_kwargs) -
     kwargs.update(map_kwargs)
     logger.debug(f"Loading ProjectionMap with kwargs {kwargs}")
 
-    return ProjectionMap(data=data, **kwargs)
+    m = ProjectionMap(data=data, **kwargs)
+
+    # maria's Q and U follow the COSMO (healpy) convention, whose U is minus the IAU one
+    if format == "fits" and str(header.get("POLCCONV", "")).strip().upper() == "IAU":
+        if "stokes" in m.dims and "U" in m.stokes:
+            logger.info(f"Flipping the sign of U of '{filename}' from the IAU to the COSMO convention.")
+            data = np.array(m.data)
+            data[list(m.stokes).index("U")] *= -1
+            m.data = da.asarray(data)
+
+    return m
 
 
 def read_hdf_map(filename: str):

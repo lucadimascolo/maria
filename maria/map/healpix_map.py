@@ -22,6 +22,8 @@ _HEALPY_COORD = {"galactic": "G", "ra/dec": "C"}
 class HEALPixMap(Map):
     """
     A spherical map. It has shape (stokes, nu, t, pix).
+
+    Q and U follow the COSMO (healpy) convention.
     """
 
     def __init__(
