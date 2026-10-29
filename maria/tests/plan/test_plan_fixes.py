@@ -5,7 +5,7 @@ import copy
 import numpy as np
 import pytest
 from astropy import units as u
-from astropy.coordinates import AltAz, SkyCoord
+from astropy.coordinates import AltAz, SkyCoord, get_sun
 from astropy.time import Time
 from maria import Planner
 from maria.coords import Frame
@@ -149,9 +149,9 @@ def test_scan_parameters_in_different_frames_raise():
 
 
 class PlannerTarget:
-    def __init__(self, ra, dec):
+    def __init__(self, ra, dec, frame="ra/dec"):
         self.center = (Quantity(ra, "deg"), Quantity(dec, "deg"))
-        self.frame = Frame("ra/dec")
+        self.frame = Frame(frame)
         self.width = Quantity(1.0, "deg")
 
 
@@ -186,6 +186,25 @@ def test_planner_run_to_the_end_of_the_lookahead():
     assert len(chunks) > 0
     assert all(chunk["duration"] <= 1800 for chunk in chunks)
     assert all(chunk["start_time"].timestamp() + chunk["duration"] <= T0 + 3600 for chunk in chunks)
+
+
+def test_planner_sun_distance_of_a_galactic_target():
+    """The sun distance compared the (l, b) of a galactic target with the (ra, dec) of the sun: in December, chunks on
+    the Galactic Centre were scheduled 10 deg from the sun with min_sun_distance = 40 deg."""
+    gc = SkyCoord(l=0 * u.deg, b=0 * u.deg, frame="galactic").icrs
+    start_time = 1733788800.0  # 2024-12-10, the sun passes ~6 deg from the Galactic Centre on Dec 18
+    kwargs = dict(site="cerro_toco", constraints={"el": (30, 90), "min_sun_distance": 40}, start_time=start_time)
+
+    chunks = {}
+    for frame, (lon, lat) in [("galactic", (0.0, 0.0)), ("ra/dec", (gc.ra.deg, gc.dec.deg))]:
+        planner = Planner(target=PlannerTarget(lon, lat, frame=frame), max_lookahead=120 * 86400, **kwargs)
+        chunks[frame] = planner.generate_obs_intervals(total_duration=4 * 3600, max_chunk_duration=1800)
+        assert len(chunks[frame]) > 0
+
+    assert [c["start_time"] for c in chunks["galactic"]] == [c["start_time"] for c in chunks["ra/dec"]]
+    for chunk in chunks["galactic"]:
+        sun = get_sun(Time(chunk["start_time"].timestamp(), format="unix"))
+        assert SkyCoord(sun.ra, sun.dec).separation(gc).deg > 40
 
 
 @pytest.mark.parametrize("duration, sample_rate", [(10, 7), (33.3, 20), (61.7, 50), (600, 100), (1800.5, 400)])
