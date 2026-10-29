@@ -100,3 +100,10 @@ def test_cmb_map_input():
 
     with pytest.raises(ValueError, match="cmb_kwargs"):
         cmb_sim(cmb=uniform, cmb_kwargs={"nside": 16})
+
+
+def test_cmb_spectrum_default():
+    """The default spectrum is the lensed Planck one, which generate_cmb and generate_cmb_patch use."""
+    default, lensed = get_cmb_spectrum(), get_cmb_spectrum(source="lensed")
+    assert default.equals(lensed)
+    assert not default.equals(get_cmb_spectrum(source="camb"))
