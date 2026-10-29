@@ -124,6 +124,35 @@ def test_galactic_polarized_map_in_the_simulation(simulate_map):
     assert np.std(tods[1] - tods[0]) < 2e-2 * np.std(tods[0])
 
 
+def test_galactic_polarized_projection_map(simulate_map):
+    """A galactic ProjectionMap gives the same polarized TOD as the same sky as a galactic HEALPixMap."""
+    import maria
+    from maria.instrument import Band
+    from maria.map import ProjectionMap
+
+    band = Band(center=150e9, width=10e9, NET_RJ=1e-5)
+    array = {"n": 4, "field_of_view": 0.02, "bands": [band], "primary_size": 6, "polarized": True}
+    instrument = maria.get_instrument(array=array)
+    galactic = SkyCoord(ra=CENTER[0] * u.deg, dec=CENTER[1] * u.deg).galactic
+    l0, b0 = galactic.l.deg, galactic.b.deg
+
+    # Q = 1 mK_RJ (referred to galactic north) around the scan, as a flat map and as a broad HEALPix bump
+    data = np.zeros((3, 64, 64))
+    data[1] = 1e-3
+    flat = ProjectionMap(data=data, stokes="IQU", resolution=0.01, center=(l0, b0), units="K_RJ", frame="galactic")
+    nside = 128
+    distance = hp.rotator.angdist(hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True), (l0, b0), lonlat=True)
+    bump = 1e-3 * np.exp(-0.5 * (distance / np.radians(10)) ** 2)
+    sphere = HEALPixMap(data=np.stack([0 * bump, bump, 0 * bump]), stokes="IQU", units="K_RJ", frame="galactic")
+
+    flat_tod, sphere_tod = (
+        simulate_map(m, instrument=instrument, radius=0.01, duration=5).run(units="K_RJ")[0].signal.compute().mean(axis=1)
+        for m in (flat, sphere)
+    )
+    assert np.abs(sphere_tod).max() > 5e-4
+    assert np.allclose(flat_tod, sphere_tod, atol=1e-5)
+
+
 def test_galactic_polarized_map_is_rotated_once(simulate_map, monkeypatch):
     """Smoothing and rotating commute, so the harmonic coefficients are rotated once, whatever the number of bands."""
     import maria

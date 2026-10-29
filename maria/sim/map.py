@@ -8,6 +8,8 @@ import arrow
 import dask.array as da
 import numpy as np
 import scipy as sp
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 from jax import jit
 from jax import scipy as jsp
 from tqdm import tqdm
@@ -15,8 +17,9 @@ from tqdm import tqdm
 from ..beam import compute_angular_fwhm
 from ..calibration import Calibration
 from ..constants import k_B
+from ..coords import offsets_to_phi_theta
 from ..io import DEFAULT_BAR_FORMAT, DEFAULT_TIME_FORMAT, humanize_time
-from ..map import HEALPixMap, Map, get
+from ..map import HEALPixMap, Map, ProjectionMap, get
 from ..units import Quantity
 
 here, this_filename = os.path.split(__file__)
@@ -25,6 +28,23 @@ logger = logging.getLogger("maria")
 DEFAULT_MAP_SIM_KWARGS = {
     "bilinear_sampling": False,
 }
+
+
+def _refer_polarization_to_celestial_north(m: ProjectionMap):
+    """
+    Rotate Q and U of a galactic ProjectionMap (inplace) from galactic to celestial north, by twice the position angle
+    of galactic north at each pixel (with the COSMO convention of healpy, as for HEALPix maps).
+    """
+    offsets = np.stack(np.meshgrid(m.xi.rad, m.eta.rad), axis=-1)
+    phi_theta = np.asarray(offsets_to_phi_theta(offsets, m.center[0].rad, m.center[1].rad))
+    pixels = SkyCoord(l=phi_theta[..., 0] * u.rad, b=phi_theta[..., 1] * u.rad, frame="galactic").icrs
+    psi = pixels.position_angle(SkyCoord(l=0 * u.deg, b=90 * u.deg, frame="galactic").icrs).rad
+    cos, sin = np.cos(2 * psi), np.sin(2 * psi)
+
+    data = np.array(m.data)
+    iq, iu = (list(m.stokes).index(stokes) for stokes in "QU")
+    data[iq], data[iu] = cos * data[iq] + sin * data[iu], cos * data[iu] - sin * data[iq]
+    m.data = da.asarray(data)
 
 
 class MapMixin:
@@ -76,6 +96,10 @@ class MapMixin:
 
         parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in m.dims}
         m.apply_parity(**parity_signature)
+
+        # Q and U of every map refer to celestial north (those of galactic HEALPix maps are rotated when smoothed)
+        if isinstance(m, ProjectionMap) and m.frame.name == "galactic" and {"Q", "U"} <= set(m.stokes):
+            _refer_polarization_to_celestial_north(m)
 
         self.maps["map"] = m
 
