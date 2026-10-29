@@ -124,9 +124,15 @@ class Planner:
             sun_sample_t = self.start_time.timestamp() + year_fraction_samples * YEAR_SECONDS.s
 
             sun = ap.coordinates.get_sun(ap.time.Time(sun_sample_t, format="unix"))
-            sun_distance_samples = great_circle_distance(
-                self.target.center[0].rad, self.target.center[1].rad, sun.ra.rad, sun.dec.rad
+            # the sun is in ra/dec, so the target center must be too
+            target_center = Coordinates(
+                phi=self.target.center[0].rad,
+                theta=self.target.center[1].rad,
+                t=self.start_time.timestamp(),
+                frame=self.target.frame,
+                earth_location=self.site.earth_location,
             )
+            sun_distance_samples = great_circle_distance(target_center.ra, target_center.dec, sun.ra.rad, sun.dec.rad)
 
             self.sun_distance_test = Quantity(
                 sp.interpolate.interp1d(year_fraction_samples, sun_distance_samples)(year_fraction_test), "rad"
