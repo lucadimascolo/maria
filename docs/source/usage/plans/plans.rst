@@ -106,5 +106,6 @@ is up. Offsets from an instrument that uses the convention ``ξ = +Δaz cos(el)`
 **Polarization angles.** A detector's polarization angle ``gamma`` is applied as a fixed angle in the Q/U basis of the
 sky map being sampled (the frame of that map). It does not rotate with the plan's ``roll`` or with the parallactic angle.
 
-**Limits.** The boresight speed is checked against the instrument's azimuth speed limit (with a warning only); the
-elevation speed and the acceleration are not checked.
+**Limits.** The boresight's azimuth and elevation speeds are checked against the instrument's speed limit
+(``az_vel_limit``, which applies to both axes), and its azimuth and elevation accelerations (taken over steps of ~10 ms)
+against ``acc_limit``. Exceeding them only gives a warning.
