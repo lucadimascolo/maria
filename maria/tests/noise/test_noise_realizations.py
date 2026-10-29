@@ -167,6 +167,22 @@ def test_observations_and_bands_are_independent():
     assert np.abs(band_corr) < 0.1, f"correlation between bands: {band_corr:.3f}"
 
 
+@pytest.mark.parametrize(
+    "noise_kwargs",
+    [
+        {"correlated_noise_proportion": -0.1},
+        {"correlated_noise_proportion": 1.5},
+        {"correlated_noise_spatial_scale": 0.0},
+        {"correlated_noise_spatial_scale": -1.0},
+    ],
+)
+def test_out_of_range_noise_kwargs_raise(noise_kwargs):
+    """A proportion outside [0, 1] gave NaN noise, and a non-positive spatial scale a degenerate basis."""
+    plan = get_plan("ten_second_zenith_stare", duration=5, sample_rate=10)
+    with pytest.raises(ValueError, match=list(noise_kwargs)[0]):
+        Simulation(instrument="test/1deg", plans=plan, site="llano_de_chajnantor", noise_kwargs=noise_kwargs)
+
+
 def test_invalid_noise_kwargs_raise():
     plan = get_plan("ten_second_zenith_stare", duration=5, sample_rate=10)
     with pytest.raises(ValueError, match="noise_kwargs"):

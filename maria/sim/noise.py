@@ -22,6 +22,17 @@ class NoiseMixin:
                 f"Invalid noise_kwargs {invalid_kwargs}; valid ones are {list(DEFAULT_NOISE_SIM_KWARGS.keys())}."
             )
 
+        correlated_noise_proportion = self.noise_kwargs["correlated_noise_proportion"]
+        if not 0 <= correlated_noise_proportion <= 1:
+            raise ValueError(
+                f"noise_kwargs['correlated_noise_proportion'] must be between 0 and 1 (got {correlated_noise_proportion})."
+            )
+        correlated_noise_spatial_scale = self.noise_kwargs["correlated_noise_spatial_scale"]
+        if not correlated_noise_spatial_scale > 0:
+            raise ValueError(
+                f"noise_kwargs['correlated_noise_spatial_scale'] must be positive (got {correlated_noise_spatial_scale})."
+            )
+
     def _simulate_noise(self, obs):
 
         noise_loading = np.zeros(shape=obs.shape, dtype=self.dtype)
