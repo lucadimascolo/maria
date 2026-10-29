@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import time as ttime
@@ -8,6 +9,7 @@ import arrow
 import numpy as np
 from tqdm import tqdm
 
+from ..array import Array, ArrayList
 from ..atmosphere import Atmosphere
 from ..coords import Coordinates
 from ..errors import PointingError
@@ -37,6 +39,16 @@ class Observation:
         atmosphere: str = None,
         atmosphere_kwargs: dict = {},
     ):
+        if plan.roll:
+            # the roll turns the polarization angles of the detectors with their offsets (below)
+            arrays = []
+            for array in instrument.arrays.arrays:
+                dets = array.dets.copy()
+                dets.loc[:, "gamma"] = dets.gamma + np.radians(plan.roll)
+                arrays.append(Array(name=array.name, dets=dets, bands=array.bands, config=array.config))
+            instrument = copy.copy(instrument)
+            instrument.arrays = ArrayList(arrays)
+
         self.instrument = instrument
         self.plan = plan
         self.site = site
