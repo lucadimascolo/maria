@@ -32,6 +32,16 @@ class CMBMixin:
         self.cmb_kwargs = DEFAULT_CMB_SIM_KWARGS.copy()
         self.cmb_kwargs.update(cmb_kwargs)
 
+        if isinstance(cmb, HEALPixMap):
+            # a CMB map of one's own
+            if cmb_kwargs:
+                raise ValueError(f"Invalid cmb_kwargs {list(cmb_kwargs)}: they are not used with a CMB map.")
+            self.cmb = cmb.copy() if "stokes" in cmb.dims else cmb.unsqueeze("stokes")
+            if self.cmb.units != "K_CMB":
+                self.cmb = self.cmb.to("K_CMB")
+            self.maps["cmb"] = self.cmb if "nu" in self.cmb.dims else self.cmb.unsqueeze("nu")
+            return
+
         if cmb in ["spectrum", "power_spectrum", "generate", "generated"]:
             cmb_function = generate_cmb
         elif cmb in ["real", "planck"]:
