@@ -28,6 +28,37 @@ logger = logging.getLogger("maria")
 SUPPORTED_MODELS_LIST = ["2d", "3d"]
 
 
+# the scan speed is that of the boresight averaged over 0.1 s, so that pointing jitter does not count, and it is the
+# 99th percentile of its running minimum over 3 steps, so that a single jump (e.g. between two concatenated stares,
+# which spans at most 2 steps) does not count either, however short the observation
+_SCAN_SPEED_WINDOW = 1e-1
+_SCAN_SPEED_QUANTILE = 0.99
+
+
+def _scan_speed(coords) -> float:
+    """
+    A robust angular speed (in rad/s) of the boresight on the sky: the 99th percentile of its speed (the minimum over
+    3 consecutive steps), with the boresight averaged over 0.1 s. It is exactly zero for a stare in az/el.
+    """
+    t = np.asarray(coords.t, dtype=float).ravel()
+    # relative to the first sample, so that a constant pointing averages to exactly zero
+    az = np.unwrap(np.asarray(coords.az, dtype=float).ravel())
+    az, el = az - az[0], np.asarray(coords.el, dtype=float).ravel()
+    el_offset = el - el[0]
+
+    bins = np.floor((t - t.min()) / _SCAN_SPEED_WINDOW).astype(int)
+    counts = np.bincount(bins)
+    filled = counts > 0
+    t, az, el_offset = (np.bincount(bins, weights=x)[filled] / counts[filled] for x in (t, az, el_offset))
+    dt = np.diff(t)
+    if not (dt > 0).any():
+        return 0.0
+    mid_el = el[0] + (el_offset[1:] + el_offset[:-1]) / 2
+    speed = np.hypot(np.diff(az) * np.cos(mid_el), np.diff(el_offset))[dt > 0] / dt[dt > 0]
+    speed = sp.ndimage.minimum_filter1d(speed, size=3, mode="nearest")
+    return float(np.quantile(speed, _SCAN_SPEED_QUANTILE))
+
+
 class Atmosphere:
     def __init__(
         self,
@@ -96,7 +127,17 @@ class Atmosphere:
         if self.timestep is None:
             min_fwhm = obs.instrument.dets.angular_fwhm(z=self.max_height).min()
             max_wind = Quantity((self.layers.wind_speed / self.layers.h).values, "rad/s").max()
-            self.timestep = max(1e-1, (min_fwhm / max_wind).s)
+            wind_crossing = (min_fwhm / max_wind).s
+            self.timestep = max(1e-1, wind_crossing)
+            # the scan also sweeps the beams across the turbulence: resolve the beam crossing time of the wind and the
+            # scan combined, down to the scan crossing time (at most 0.1 s, the floor for the wind alone) or the
+            # sample interval of the TOD, whichever is longer, but never coarser than for the wind alone
+            scan_speed = _scan_speed(obs.boresight)
+            if scan_speed > 0:
+                scan_crossing = min_fwhm.rad / scan_speed
+                combined_crossing = 1 / (1 / wind_crossing + 1 / scan_crossing)
+                tod_interval = np.median(np.diff(obs.boresight.t))
+                self.timestep = min(self.timestep, max(tod_interval, min(scan_crossing, 1e-1), combined_crossing))
 
         self.boresight = obs.boresight.downsample(timestep=self.timestep)
         self.coords = self.boresight.broadcast(
