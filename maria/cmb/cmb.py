@@ -50,7 +50,7 @@ def _find_healpix_columns(path):
     return [columns[stokes] for stokes in "IQU"]
 
 
-def get_cmb(nside: int = None, **kwargs):
+def get_cmb(nside: int = None):
     """
     The Planck CMB map, in K_CMB and galactic coordinates, degraded to `nside` (by default, to the coarsest
     resolution of its I, Q and U maps). The map contains the solar dipole (about 3.4 mK).

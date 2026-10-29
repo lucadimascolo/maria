@@ -37,7 +37,7 @@ def get_cmb_spectrum(source="lensed"):
     return pd.read_csv(cmb_spectrum_path, index_col=0)
 
 
-def generate_cmb(nside: int = 1024, lmax: int = None, source: str = "lensed", seed: int = 123456, **kwargs):
+def generate_cmb(nside: int = 1024, lmax: int = None, source: str = "lensed", seed: int = 123456):
     """
     Generate a new CMB.
 
