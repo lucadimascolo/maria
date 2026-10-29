@@ -207,6 +207,14 @@ def test_planner_sun_distance_of_a_galactic_target():
         assert SkyCoord(sun.ra, sun.dec).separation(gc).deg > 40
 
 
+def test_planner_sun_distance_of_an_azel_target_raises():
+    """The sun distance of a target fixed in az/el was computed from its ra/dec at the start time only (and on master
+    from its (az, el) taken as (ra, dec)), which is meaningless for a target that moves on the sky."""
+    with pytest.raises(ValueError, match="sky frame"):
+        Planner(target=PlannerTarget(180.0, 60.0, frame="az/el"), site="cerro_toco", constraints={"min_sun_distance": 40})
+    Planner(target=PlannerTarget(180.0, 60.0, frame="az/el"), site="cerro_toco", constraints={"el": (30, 90)})
+
+
 @pytest.mark.parametrize("duration, sample_rate", [(10, 7), (33.3, 20), (61.7, 50), (600, 100), (1800.5, 400)])
 def test_plan_time_grid_is_exact(duration, sample_rate):
     """P-new3: np.arange on absolute unix time quantized the step (0.0025000572 s at 400 Hz, a 41 ms drift over
