@@ -44,6 +44,20 @@ def test_fits_export_wcs(shape, res, center):
     assert angular_distance_deg(phi, theta, true[..., 0], true[..., 1]).max() < 0.01 * res
 
 
+@pytest.mark.parametrize(
+    "eta, xi",
+    [(slice(10, 50), slice(100, 190)), (slice(None, None, 2), slice(1, None, 3)), (slice(None, None, -1), slice(0, 60))],
+)
+def test_fits_export_wcs_of_sliced_map(eta, xi):
+    """A slice of a map has its centre (where the offsets are zero) away from its middle pixel; the WCS follows it."""
+    m = ProjectionMap(data=np.zeros((200, 200)), resolution=0.05, center=(150.0, -30.0), units="K_RJ")[..., eta, xi]
+    shape = (m.dims["eta"], m.dims["xi"])
+    j, i = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    phi, theta = WCS(m.header()).wcs_pix2world(i, j, 0)
+    true = maria_pixel_centers(m)
+    assert angular_distance_deg(phi, theta, true[..., 0], true[..., 1]).max() < 1e-3 * 0.05
+
+
 def write_image(path, data, header):
     fits.PrimaryHDU(data=data.astype(np.float32), header=header).writeto(path, overwrite=True)
 
@@ -133,6 +147,19 @@ def test_fits_import_non_zenithal_projection(tmp_path):
     m = maria.map.load(path, units="K_RJ")
     assert np.allclose([m.center[0].deg, m.center[1].deg], w.wcs_pix2world([[31.5, 31.5]], 0)[0])
     assert np.allclose(m.xi.deg, 0.01 * np.linspace(-31.5, 31.5, nx))
+
+
+@pytest.mark.parametrize("center", [(150.0, -30.0), (150.0, -60.0), (150.0, 2.0)])
+def test_fits_round_trip_of_sliced_map(tmp_path, center):
+    """A sliced map, whose centre is not in its middle, keeps every pixel where it was through a FITS file."""
+    rng = np.random.default_rng(0)
+    m = ProjectionMap(data=rng.random((200, 200)), resolution=0.05, center=center, units="K_RJ")[..., 10:50, 100:190]
+    path = str(tmp_path / "sliced.fits")
+    m.to_fits(path)
+    m2 = maria.map.load(path)
+    p1, p2 = maria_pixel_centers(m), maria_pixel_centers(m2)
+    assert angular_distance_deg(p1[..., 0], p1[..., 1], p2[..., 0], p2[..., 1]).max() < 1e-3 * 0.05
+    assert np.allclose(m2.data.compute(), m.data.compute())
 
 
 @pytest.mark.parametrize("shape", [(64, 64), (65, 65), (33, 64)])
