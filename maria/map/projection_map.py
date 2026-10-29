@@ -183,14 +183,15 @@ class ProjectionMap(Map):
         CTYPE1 = self.frame.fits_phi
         header["CTYPE1"] = f"{CTYPE1}{(5 - len(CTYPE1)) * '-'}ARC"  # maria maps are zenithal equidistant
         header["CRVAL1"] = self.center[0].deg
-        header["CRPIX1"] = (self.xi.size + 1) / 2  # the map centre, in 1-based FITS pixels
+        # the 1-based FITS pixel of the centre (zero offset), which a sliced map need not have in its middle
+        header["CRPIX1"] = (self.xi.size + 1) / 2 - (self.xi[0].rad + self.xi[-1].rad) / (2 * self.xi_res.rad)
         header["CDELT1"] = -self.xi_res.deg  # longitude goes the other way
         header["CUNIT1"] = "deg"
 
         CTYPE2 = self.frame.fits_theta
         header["CTYPE2"] = f"{CTYPE2}{(5 - len(CTYPE2)) * '-'}ARC"
         header["CRVAL2"] = self.center[1].deg
-        header["CRPIX2"] = (self.eta.size + 1) / 2
+        header["CRPIX2"] = (self.eta.size + 1) / 2 - (self.eta[0].rad + self.eta[-1].rad) / (2 * self.eta_res.rad)
         header["CDELT2"] = self.eta_res.deg
         header["CUNIT2"] = "deg"
 
