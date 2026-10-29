@@ -144,28 +144,38 @@ class MapMixin:
 
                 # ideally we would do this for each nu bin, but that's slow
 
+                # the map is already convolved with its own beam (e.g. the BMAJ of a FITS file), so it only needs the
+                # rest of the band beam; we use its widest (major) beam axis over all channels
+                map_fwhm = float(np.max(m.beam.rad[..., 0]))
+                if map_fwhm > band_fwhm.rad:
+                    logger.warning(
+                        f"The beam of map '{map_name}' ({Quantity(map_fwhm, 'rad')}) is wider than the beam of band "
+                        f"{band.name} ({band_fwhm}); the map is not smoothed for this band."
+                    )
+                kernel_fwhm = Quantity(np.sqrt(max(band_fwhm.rad**2 - map_fwhm**2, 0)), "rad")
+
                 if isinstance(m, HEALPixMap):
                     # full-sky smoothing is slow, so do it once per beam and map data for all observations (Q and U
                     # as a spin-2 field). Polarized galactic maps are rotated to ra/dec, so that Q and U of every map
                     # refer to the same (celestial) north.
-                    key = (map_name, float(band_fwhm.rad))
+                    key = (map_name, float(kernel_fwhm.rad))
                     # (the map is kept with its data key, so that a new map or an edit of its data is not missed)
                     cached_map, cached_data, smoothed_map = self._smoothed_healpix_maps.get(key, (None, None, None))
                     if cached_map is not m or cached_data != m._data_key():
                         polarized = "stokes" in m.dims and {"Q", "U"} <= set(m.stokes)
                         frame = "ra/dec" if polarized and m.frame.name == "galactic" else None
-                        smoothed_map = m._smooth(fwhm=band_fwhm, pol=True, frame=frame)
+                        smoothed_map = m._smooth(fwhm=kernel_fwhm, pol=True, frame=frame)
                         self._smoothed_healpix_maps[key] = (m, m._data_key(), smoothed_map)
                 else:
                     # the sky is zero beyond the edges of the map, and the beam spreads the sky near the edges past
                     # them: the map is padded with zero sky out to the extent of the smoothing kernel (4 sigma), or
                     # only as far as the samples reach
-                    kernel_sigma = band_fwhm.rad / np.sqrt(8 * np.log(2))
+                    kernel_sigma = kernel_fwhm.rad / np.sqrt(8 * np.log(2))
                     offsets = band_coords.offsets(center=(m.center[0].rad, m.center[1].rad), frame=m.frame.name)
                     padded_map = m._pad_with_zero_sky(radius=4 * kernel_sigma, offsets=offsets)
-                    smoothed_map = padded_map._smooth(fwhm=band_fwhm, zero_outside=True)
+                    smoothed_map = padded_map._smooth(fwhm=kernel_fwhm, zero_outside=True)
 
-                logger.debug(f"Convolved map with beam width {band_fwhm} for band {band.name}")
+                logger.debug(f"Convolved map with beam width {kernel_fwhm} for band {band.name}")
 
                 bands_pbar.set_postfix(band=band.name, message=f"Computing pointing matrix")
 
