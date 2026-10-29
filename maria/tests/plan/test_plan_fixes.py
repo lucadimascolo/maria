@@ -216,3 +216,12 @@ def test_plan_time_grid_is_exact(duration, sample_rate):
     assert plan.n == int(np.ceil(duration * sample_rate - 1e-9))
     assert np.abs(plan.time - (T0 + 0.37 + np.arange(plan.n) / sample_rate)).max() < 1e-6
     assert np.isclose(plan.sample_rate.Hz, sample_rate, rtol=1e-7)
+
+
+def test_great_circle_distance_is_an_angle():
+    """great_circle_distance returned the chord 2 sqrt(hav), so 40 deg came out as 39.2 deg and 180 deg as 2 rad."""
+    from maria.utils import great_circle_distance
+
+    for d in [1.0, 40.0, 90.0, 179.0]:
+        assert np.isclose(np.degrees(great_circle_distance(0.0, 0.0, np.radians(d), 0.0)), d)
+    assert np.isclose(np.degrees(great_circle_distance(0.3, np.radians(10.0), 0.3, np.radians(-30.0))), 40.0)

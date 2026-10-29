@@ -7,4 +7,4 @@ def hav(x):
 
 def great_circle_distance(phi1, theta1, phi2, theta2):
     hav_d = hav(theta2 - theta1) + np.cos(theta1) * np.cos(theta2) * hav(phi1 - phi2)
-    return 2 * np.sqrt(hav_d)
+    return 2 * np.arcsin(np.sqrt(np.clip(hav_d, 0, 1)))
