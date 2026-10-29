@@ -242,8 +242,8 @@ class Atmosphere:
             for i, (layer_index, layer) in enumerate(
                 self.layers.loc[in_process].iterrows(),
             ):
-                # this algorithm probably works
-                n_cross_section = int(np.maximum(2, (np.ptp(tp[:, 1]) + 2 * layer.res) / layer.res))
+                # round up, so that the spacing of the cross-section is at most the resolution of the layer
+                n_cross_section = int(np.ceil((np.ptp(tp[:, 1]) + 2 * layer.res) / layer.res)) + 1
                 cross_section_points = np.stack(
                     [
                         np.linspace(tp[:, 1].min() - layer.res, tp[:, 1].max() + layer.res, n_cross_section),
@@ -372,7 +372,7 @@ class Atmosphere:
                     )
                     beam_sigma = beam_fwhm / 2.355
                     extrusion_sigma = beam_sigma / process.extrusion_res
-                    x_sigma = beam_sigma / layer.res
+                    x_sigma = beam_sigma / np.diff(process.cross_section[layer_mask, 0]).mean()
 
                     smoothed_layer_pwv = sp.ndimage.gaussian_filter(
                         process.values[:, layer_mask],
