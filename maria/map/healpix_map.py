@@ -198,23 +198,30 @@ class HEALPixMap(Map):
             if ({"Q", "U"} & set(stokes)) and not (pol and {"Q", "U"} <= set(stokes)):
                 raise ValueError("Rotating Q and U to another frame needs both of them and pol=True.")
 
-        maps = np.asarray(self.data).reshape(max(len(stokes), 1), -1, self.npix)
+        if sigma.radians == 0 and frame == self.frame.name:
+            # no smoothing: the map is kept as it is, since a round trip through spherical harmonics would not give it
+            # back exactly (NaN and UNSEEN pixels are masked, i.e. set to zero, as in the transform)
+            data = np.asarray(self.data)
+            data = np.where(np.isnan(data) | hp.mask_bad(data), 0, data)
 
-        groups = [[i] for i in range(len(maps))]
-        if pol and {"Q", "U"} <= set(stokes):
-            # Q and U are a spin-2 field, smoothed together with I (or with a zero I if the map has none)
-            iqu = [stokes.index(s) if s in stokes else None for s in "IQU"]
-            groups = [iqu] + [[i] for i in range(len(maps)) if i not in iqu]
+        else:
+            maps = np.asarray(self.data).reshape(max(len(stokes), 1), -1, self.npix)
 
-        smoothed_maps = np.zeros_like(maps)
-        for k in range(maps.shape[1]):
-            for group in groups:
-                smoothed = self._smooth_slice(maps, group, k, sigma.radians, frame)
-                for i, smoothed_map in zip(group, smoothed):
-                    if i is not None:
-                        smoothed_maps[i, k] = smoothed_map
+            groups = [[i] for i in range(len(maps))]
+            if pol and {"Q", "U"} <= set(stokes):
+                # Q and U are a spin-2 field, smoothed together with I (or with a zero I if the map has none)
+                iqu = [stokes.index(s) if s in stokes else None for s in "IQU"]
+                groups = [iqu] + [[i] for i in range(len(maps)) if i not in iqu]
 
-        data = smoothed_maps.reshape(self.data.shape)
+            smoothed_maps = np.zeros_like(maps)
+            for k in range(maps.shape[1]):
+                for group in groups:
+                    smoothed = self._smooth_slice(maps, group, k, sigma.radians, frame)
+                    for i, smoothed_map in zip(group, smoothed):
+                        if i is not None:
+                            smoothed_maps[i, k] = smoothed_map
+
+            data = smoothed_maps.reshape(self.data.shape)
 
         beam, beam_area_ratio = self._smoothed_beam(sigma)
         data = data * beam_area_ratio
