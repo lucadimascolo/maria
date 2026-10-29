@@ -316,20 +316,24 @@ class Coordinates:
         n = int(np.ceil((self.t.max() - self.t.min()) / timestep))
         ds_t = self.t.min() + timestep * np.arange(n + 1)
         ds_t[-1] = max(ds_t[-1], self.t.max())  # guard against rounding at unix-time magnitudes
+        return self._interpolate(ds_t)
+
+    def _interpolate(self, t):
+        """The coordinates interpolated (and extrapolated) to the times t."""
         # interpolate the longitude across the 0/2π wrap: only the tracks that cross it are unwrapped (and wrapped
         # back into their own range afterwards), so the others are interpolated exactly as before. A track that crosses
         # the wrap is in [-π, π) if it never exceeds π, and in [0, 2π) otherwise: per-detector azimuths near north can
         # dip slightly below 0 while the boresight is in [0, 2π)
         phi, crosses, phi_max = _unwrap_longitude(self._phi)
-        ds_phi = sp.interpolate.interp1d(self.t, phi, axis=-1, bounds_error=False, fill_value="extrapolate")(ds_t)
+        ds_phi = sp.interpolate.interp1d(self.t, phi, axis=-1, bounds_error=False, fill_value="extrapolate")(t)
         if crosses.any():
             lower = np.where(phi_max <= np.pi, -np.pi, 0.0)[crosses]
             ds_phi[crosses] = (ds_phi[crosses] - lower[..., None]) % (2 * np.pi) + lower[..., None]
 
-        ds_theta = sp.interpolate.interp1d(self.t, self._theta, axis=-1, bounds_error=False, fill_value="extrapolate")(ds_t)
+        ds_theta = sp.interpolate.interp1d(self.t, self._theta, axis=-1, bounds_error=False, fill_value="extrapolate")(t)
 
         return Coordinates(
-            t=ds_t,
+            t=t,
             phi=ds_phi,
             theta=ds_theta,
             earth_location=self.earth_location,

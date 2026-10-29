@@ -528,7 +528,9 @@ class TOD:
             field: self.data[field][..., :trim_n_samples].reshape(-1, new_n_samples, factor).mean(axis=-1).rechunk()
             for field in self.fields
         }
-        content["coords"] = self.coords.downsample(factor=factor)[..., :new_n_samples]
+        # the data are block means, so the coordinates go at the block-centre times
+        block_t = self.coords.t[:trim_n_samples].reshape(new_n_samples, factor).mean(axis=-1)
+        content["coords"] = self.coords._interpolate(block_t)
 
         return TOD(**content)
 
