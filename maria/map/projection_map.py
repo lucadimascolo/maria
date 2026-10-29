@@ -444,6 +444,39 @@ class ProjectionMap(Map):
             beam=self.beam,
         )
 
+    def _pad_with_zero_sky(self, radius: float, offsets=None):
+        """
+        The map with zero sky (and, for a weighted map, the weight of the nearest edge pixel, as _smooth gives it with
+        zero_outside) beyond its edges, out to at least `radius` (in radians) past the outer pixel centres. Given the
+        (xi, eta) offsets (in radians) of the samples, it is padded only as far as they reach beyond the outer pixel
+        centres (and at most `radius`): _smooth with zero_outside gives the pixels the same values either way.
+        """
+        package = self.package()
+        pad_width = [(0, 0)] * (self.ndim - 2)
+        for dim, offset_index in [("eta", 1), ("xi", 0)]:
+            side = getattr(self, dim).deg
+            n_pad = [0, 0]
+            if side.size > 1:
+                n_max = int(np.ceil(radius / abs(getattr(self, f"{dim}_res").rad)))
+                n_pad = [n_max, n_max]
+                if offsets is not None:
+                    # the fractional pixel index of the samples, and the pixels (one more for bilinear sampling) that
+                    # those beyond the outer pixel centres need
+                    index = (np.degrees(np.asarray(offsets[..., offset_index])) - side[0]) / (side[1] - side[0])
+                    reach = [-np.nanmin(index), np.nanmax(index) - (side.size - 1)]
+                    n_pad = [int(np.clip(np.ceil(r) + 1, 0, n_max)) for r in reach]
+            step = side[1] - side[0] if side.size > 1 else 0
+            package[dim] = np.concatenate(
+                [side[0] + step * np.arange(-n_pad[0], 0), side, side[-1] + step * np.arange(1, n_pad[1] + 1)]
+            )
+            pad_width.append(tuple(n_pad))
+
+        package["data"] = da.pad(da.asarray(self.data), pad_width=pad_width, mode="constant", constant_values=0)
+        if "weight" in package:
+            package["weight"] = da.pad(da.asarray(package["weight"]), pad_width=pad_width, mode="edge")
+
+        return type(self)(**package)
+
     def zero_pad(self):
 
         package = self.package()
@@ -462,6 +495,17 @@ class ProjectionMap(Map):
         return type(self)(**package)
 
     def smooth(self, sigma: float = None, fwhm: float = None, degrees: bool = True):
+        """
+        Smooth the map with a circular Gaussian beam. The map is reflected about its edges.
+        """
+        return self._smooth(sigma=sigma, fwhm=fwhm, degrees=degrees)
+
+    def _smooth(self, sigma: float = None, fwhm: float = None, degrees: bool = True, zero_outside: bool = False):
+        """
+        smooth(), where with zero_outside the sky beyond the edges of the map is zero, as the simulation samples it:
+        the data are smoothed with zeros beyond the edges, and the weight with the nearest edge pixel (so the zero sky
+        counts as much as the edge of the map).
+        """
         if not (sigma is None) ^ (fwhm is None):
             raise ValueError("You must supply exactly one of 'sigma' or 'fwhm'.")
 
@@ -475,8 +519,10 @@ class ProjectionMap(Map):
         x_sigma_pixels = abs(sigma / self.xi_res)
         y_sigma_pixels = abs(sigma / self.eta_res)
 
-        numer = sp.ndimage.gaussian_filter(self.data * self.weight, sigma=(y_sigma_pixels, x_sigma_pixels), axes=(-2, -1))
-        denom = sp.ndimage.gaussian_filter(self.weight, sigma=(y_sigma_pixels, x_sigma_pixels), axes=(-2, -1))
+        data_mode, weight_mode = ("constant", "nearest") if zero_outside else ("reflect", "reflect")
+        sigma_pixels = (y_sigma_pixels, x_sigma_pixels)
+        numer = sp.ndimage.gaussian_filter(self.data * self.weight, sigma=sigma_pixels, axes=(-2, -1), mode=data_mode)
+        denom = sp.ndimage.gaussian_filter(self.weight, sigma=sigma_pixels, axes=(-2, -1), mode=weight_mode)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             package["data"] = np.where(denom > 0, numer / denom, 0)
