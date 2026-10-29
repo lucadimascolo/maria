@@ -133,7 +133,13 @@ class MapMixin:
                         smoothed_map = m._smooth(fwhm=band_fwhm, pol=True, frame=frame)
                         self._smoothed_healpix_maps[key] = (m, m._data_key(), smoothed_map)
                 else:
-                    smoothed_map = m.smooth(fwhm=band_fwhm)
+                    # the sky is zero beyond the edges of the map, and the beam spreads the sky near the edges past
+                    # them: the map is padded with zero sky out to the extent of the smoothing kernel (4 sigma), or
+                    # only as far as the samples reach
+                    kernel_sigma = band_fwhm.rad / np.sqrt(8 * np.log(2))
+                    offsets = band_coords.offsets(center=(m.center[0].rad, m.center[1].rad), frame=m.frame.name)
+                    padded_map = m._pad_with_zero_sky(radius=4 * kernel_sigma, offsets=offsets)
+                    smoothed_map = padded_map._smooth(fwhm=band_fwhm, zero_outside=True)
 
                 logger.debug(f"Convolved map with beam width {band_fwhm} for band {band.name}")
 
@@ -141,7 +147,7 @@ class MapMixin:
 
                 pointing_s = ttime.monotonic()
 
-                # there is no sky signal beyond the edges of the input map
+                # there is no sky signal beyond the edges of the (padded) map
                 P = smoothed_map[:, 0]._stokes_weighted_pointing_matrix(
                     coords=band_coords,
                     dets=band_dets,
