@@ -70,16 +70,60 @@ class Observation:
                 f"(el_min = {np.degrees(el_min):.01f}°)",
             )
 
-        max_abs_az_vel_deg = np.max(
-            np.abs(np.gradient(np.degrees(np.unwrap(self.boresight.az))) / np.gradient(self.boresight.t))
-        )
-        max_abs_el_vel_deg = np.max(np.abs(np.gradient(np.degrees(self.boresight.el)) / np.gradient(self.boresight.t)))
+        # NaN pointing is ignored, so that it does not disable the checks: only the finite azimuths are unwrapped
+        # (np.unwrap would carry a NaN to all the later samples), and the maxima skip NaN
+        az_deg = np.degrees(np.array(self.boresight.az, dtype=float))
+        finite_az = np.isfinite(az_deg)
+        az_deg[finite_az] = np.unwrap(az_deg[finite_az], period=360.0)
+        el_deg = np.degrees(np.asarray(self.boresight.el, dtype=float))
+        max_abs_az_vel_deg = np.nanmax(np.abs(np.gradient(az_deg) / np.gradient(self.boresight.t)))
+        max_abs_el_vel_deg = np.nanmax(np.abs(np.gradient(el_deg) / np.gradient(self.boresight.t)))
 
         if max_abs_az_vel_deg > self.instrument.az_vel_limit:
             logger.warning(
                 (
                     f"The maximum velocity of the boresight ({max_abs_az_vel_deg:.01f} deg/s) exceeds "
                     f"the maximum velocity of the instrument ({self.instrument.az_vel_limit:.01f} deg/s)."
+                ),
+            )
+
+        # the instrument has a single speed limit, which applies to the elevation too
+        if max_abs_el_vel_deg > self.instrument.az_vel_limit:
+            logger.warning(
+                (
+                    f"The maximum elevation velocity of the boresight ({max_abs_el_vel_deg:.01f} deg/s) exceeds "
+                    f"the maximum velocity of the instrument ({self.instrument.az_vel_limit:.01f} deg/s)."
+                ),
+            )
+
+        # the acceleration is the 3-point second difference over steps of at least ~10 ms: at higher sample rates
+        # it is dominated by the rounding noise of the float32 pointing (~20 deg/s^2 at 1 kHz). A gradient of the
+        # gradient would smooth over twice the step, and underestimate sharp turnarounds.
+        # Samples whose timestamp does not increase (e.g. repeated timestamps) are dropped first, so that the stride
+        # comes from positive time steps.
+        t_acc = np.asarray(self.boresight.t, dtype=float)
+        increasing = np.r_[True, t_acc[1:] > np.fmax.accumulate(t_acc)[:-1]]
+        t_acc = t_acc[increasing]
+        dt_acc = np.diff(t_acc)
+        step = max(1, round(0.01 / np.median(dt_acc))) if dt_acc.size else 1
+        t_acc = t_acc[::step]
+        max_abs_acc_deg = 0.0
+        for x in [az_deg[increasing][::step], el_deg[increasing][::step]]:
+            if t_acc.size > 2:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    vel = np.diff(x) / np.diff(t_acc)
+                    acc = 2 * np.diff(vel) / (t_acc[2:] - t_acc[:-2])
+                # NaN pointing gives a non-finite acceleration, which is ignored so that it does not disable the
+                # check (max(0, nan) is 0)
+                acc = acc[np.isfinite(acc)]
+                if acc.size:
+                    max_abs_acc_deg = max(max_abs_acc_deg, np.abs(acc).max())
+
+        if max_abs_acc_deg > self.instrument.acc_limit:
+            logger.warning(
+                (
+                    f"The maximum acceleration of the boresight ({max_abs_acc_deg:.01f} deg/s^2) exceeds "
+                    f"the maximum acceleration of the instrument ({self.instrument.acc_limit:.01f} deg/s^2)."
                 ),
             )
 
