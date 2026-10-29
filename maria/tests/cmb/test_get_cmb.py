@@ -4,6 +4,7 @@ import healpy as hp
 import maria
 import maria.cmb.cmb
 import numpy as np
+import pytest
 
 
 def test_get_cmb(tmp_path, monkeypatch):
@@ -95,3 +96,16 @@ def test_get_cmb_keeps_dipole(tmp_path, monkeypatch):
     kept = np.asarray(maria.cmb.get_cmb().data).reshape(3, -1)
     assert np.allclose(kept[0], anisotropies[0] + dipole, atol=1e-8)
     assert np.allclose(kept[1:], np.stack(anisotropies[1:]), atol=1e-8)
+
+
+def test_get_cmb_unknown_kwargs(monkeypatch):
+    """get_cmb rejects unknown kwargs instead of silently ignoring them (a misspelled nside gave the default)."""
+    monkeypatch.setattr(maria.cmb.cmb, "fetch", lambda **kwargs: pytest.fail("fetched"))
+    with pytest.raises(TypeError):
+        maria.cmb.get_cmb(nsides=16)
+
+
+def test_generate_cmb_unknown_kwargs():
+    """generate_cmb rejects unknown kwargs too (a misspelled seed was silently ignored)."""
+    with pytest.raises(TypeError):
+        maria.cmb.generate_cmb(nside=16, sead=5)
