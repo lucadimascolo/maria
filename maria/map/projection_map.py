@@ -366,10 +366,14 @@ class ProjectionMap(Map):
             )
             return np.moveaxis(interpolator((offsets[..., 1], offsets[..., 0])), (0, 1), (-2, -1))
 
+        # maps in units per pixel (like Jy/pixel) scale with the pixel area, as in reduce()
+        pixel_area_ratio = float(other_map.pixel_area.sr / self.pixel_area.sr)
+        pixel_area_factor = pixel_area_ratio ** -parse_units(self.units)["dimension_vector"]["pixel"]
+
         # the new map is on the other map's grid, so it is in the other map's frame
         return type(self)(
-            interpolate(self.data),
-            weight=interpolate(self._weight) if self._weight is not None else None,
+            interpolate(self.data) * pixel_area_factor,
+            weight=interpolate(self._weight) * pixel_area_factor**-2 if self._weight is not None else None,
             units=self.units,
             center=other_map.center,
             frame=other_map.frame.name,

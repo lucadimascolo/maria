@@ -118,6 +118,17 @@ def test_resample_keeps_frame_and_weight():
     assert np.allclose(r.weight.compute()[inner], weight[inner], atol=1e-2)
 
 
+def test_resample_keeps_flux():
+    """Resampling a Jy/pixel map to a coarser grid keeps its total flux; K_RJ maps are not rescaled."""
+    x = np.arange(128)
+    X, Y = np.meshgrid(x, x)
+    data = np.exp(-((X - 60) ** 2 + (Y - 70) ** 2) / (2 * 15**2))[None]
+    for units, expected in [("Jy/pixel", data.sum()), ("K_RJ", data.sum() / 4)]:
+        m = ProjectionMap(data=data, nu=[150e9], resolution=0.01, center=(150.0, -30.0), units=units)
+        coarse = ProjectionMap(data=np.zeros((1, 64, 64)), nu=[150e9], resolution=0.02, center=(150.0, -30.0), units=units)
+        assert np.isclose(np.nansum(m.resample(coarse).data.compute()), expected, rtol=1e-2), units
+
+
 def test_to_obs_frame():
     data = np.ones((2, 1, 8, 8))
     m = ProjectionMap(data=data[:, 0], nu=[90e9, 150e9], resolution=0.01, units="K_RJ")
