@@ -219,3 +219,57 @@ def test_brightness_temperature_to_power_sub_ghz_band(center):
     truth = 1e12 * np.array([np.ravel(brightness_temperature_to_power_explicit(np.array([T]), band=band))[0] for T in T_b])
     # the Wien-suppressed power far below h nu / k_B is negligible (and linear below the floor)
     assert np.allclose(P, truth, rtol=1e-3, atol=1e-9 * truth.max())
+
+
+def test_negative_brightness_temperature_raises():
+    """
+    A brightness temperature is absolute, so a negative one has no Planck power (it used to give a negative power,
+    e.g. -1.6e-12 pW at -1 mK).
+    """
+    band = maria.get_band("act/pa5/f150")
+    with pytest.raises(ValueError, match="negative"):
+        Calibration("K_b -> pW", band=band)(np.array([-1e-3, 1.0]))
+    assert np.all(np.ravel(Calibration("K_b -> pW", band=band)(np.array([0.0, 1.0]))) >= 0)
+
+
+def test_negative_brightness_temperature_to_rayleigh_jeans_raises():
+    """
+    K_b -> K_RJ (used to sample K_b maps) gave -7.2 K_RJ at 150 GHz for -1e-6 K_b, since the Planck spectrum of a
+    negative temperature tends to -2 h nu^3 / c^2. It now raises like K_b -> pW, and stays the RJ limit otherwise.
+    """
+    with pytest.raises(ValueError, match="negative"):
+        Calibration("K_b -> K_RJ")(np.array([-1e-6, 1.0]), nu=150e9)
+
+    T_b = np.array([0.0, 1e-3, 1.0, 10.0, 1e3])
+    with np.errstate(divide="ignore", over="ignore"):
+        T_RJ = np.ravel(Calibration("K_b -> K_RJ")(T_b, nu=150e9))
+        x = h * 150e9 / (k_B * T_b)
+        truth = (h * 150e9 / k_B) / np.expm1(x)
+    assert np.all(T_RJ >= 0)
+    assert np.allclose(T_RJ, truth, rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize("with_spectrum", [False, True])
+def test_negative_infinite_brightness_temperature_is_nan(with_spectrum):
+    """
+    A non-finite temperature gives NaN for that element only, -inf included (it raised as a negative temperature);
+    a finite negative one still raises.
+    """
+    band = maria.get_band("act/pa5/f150")
+    kwargs = {}
+    if with_spectrum:
+        spectrum = AtmosphericSpectrum(region="chajnantor")
+        kwargs = {
+            "spectrum": spectrum,
+            "pwv": 1.0,
+            "effective_temperature": spectrum.side_effective_temperature.K.mean(),
+            "elevation": np.radians(60),
+        }
+    convert = Calibration("K_b -> pW", band=band, **kwargs)
+    truth = 1e12 * np.ravel(brightness_temperature_to_power_explicit(np.array([3.0, 30.0]), band=band, **kwargs))
+
+    P = convert(np.array([3.0, -np.inf, 30.0]))
+    assert np.isnan(P[1])
+    assert np.allclose(P[[0, 2]], truth, rtol=1e-6)
+    with pytest.raises(ValueError, match="negative"):
+        convert(np.array([3.0, -np.inf, -1.0, 30.0]))
