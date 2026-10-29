@@ -28,6 +28,8 @@ logger = logging.getLogger("maria")
 class ProjectionMap(Map):
     """
     A rectangular map projected on the sphere. It has shape (stokes, nu, t, y, x).
+
+    Q and U follow the COSMO (healpy) convention; FITS files with POLCCONV = 'IAU' have their U flipped when loaded.
     """
 
     def __init__(
