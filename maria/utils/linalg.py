@@ -104,10 +104,13 @@ def fast_psd_inverse(M):
 
 def generate_spatial_basis(offsets, k: int = 5, n_side: int = 8, scale: float = 1):
 
-    x = np.linspace(offsets[..., 0].min(), offsets[..., 0].max(), n_side)
-    y = np.linspace(offsets[..., 1].min(), offsets[..., 1].max(), n_side)
+    lo, hi = offsets.reshape(-1, 2).min(axis=0), offsets.reshape(-1, 2).max(axis=0)
+    # a focal plane along a line has no extent in one dimension, which the grid needs
+    pad = np.where(hi > lo, 0, max((hi - lo).max(), scale) / 2)
+    x = np.linspace(lo[0] - pad[0], hi[0] + pad[0], n_side)
+    y = np.linspace(lo[1] - pad[1], hi[1] + pad[1], n_side)
 
-    X, Y = np.meshgrid(x, y)
+    X, Y = np.meshgrid(x, y, indexing="ij")
 
     sample_offsets = np.stack([X.ravel(), Y.ravel()], axis=-1)
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import jax
 import numpy as np
 
 from ..utils import compute_diameter, generate_spatial_basis
@@ -15,34 +14,40 @@ def generate_noise_with_knee(
     beta: float = 1.0,
     basis: float = None,
     corr_prop: float = 0.0,
-    seed: int = 12345,
+    seed: int = None,
 ):
     """
-    Simulate white noise for a given time and NEP.
+    Simulate noise with a unit NEP (a per-sample standard deviation of sqrt(sample_rate)) and a knee.
+
+    A fraction 'corr_prop' of the pink noise power comes from pink-only modes, mixed in by the rows of 'basis'
+    (n_dets, n_modes) normalized to 1. The noise is drawn from NumPy's global random state, or from its own
+    generator if a seed is given.
     """
 
-    noise = np.sqrt(sample_rate) * np.random.standard_normal(shape)
+    rng = np.random if seed is None else np.random.default_rng(seed)
+
+    noise = np.sqrt(sample_rate) * rng.standard_normal(shape)
 
     # pink noise
     if knee > 0:
         f = np.fft.fftfreq(n=shape[-1], d=1 / sample_rate)
-        a = knee / 2
+        # a two-sided PSD of (knee / |f|) ** beta (in units of the white level), which equals the white noise at the
+        # knee for any beta
         with np.errstate(divide="ignore", invalid="ignore"):
-            pink_noise_power_spectrum = np.where(f != 0, a / (np.abs(f) ** beta), 0)
+            pink_noise_power_spectrum = np.where(f != 0, 0.5 * (knee / np.abs(f)) ** beta, 0)
 
         weights = np.sqrt(2 * sample_rate * pink_noise_power_spectrum)
-        pink_noise = np.real(
-            np.fft.ifft(
-                weights * np.fft.fft(jax.random.normal(key=jax.random.key(seed), shape=shape)),
-            ),
-        )
+
+        def pink(shape):
+            return np.real(np.fft.ifft(weights * np.fft.fft(rng.standard_normal(shape))))
+
+        pink_noise = pink(shape)
 
         if basis is not None:
-            noise_modes = generate_noise_with_knee(
-                shape=(basis.shape[-1], shape[-1]),
-                sample_rate=sample_rate,
-                knee=knee,
-            )
+            # pink-only modes, so that the white noise of each detector is independent, with unit-norm rows, so
+            # that every detector keeps the pink noise level set by the knee
+            basis = basis / np.linalg.norm(basis, axis=-1, keepdims=True)
+            noise_modes = pink((basis.shape[-1], shape[-1]))
 
             pink_noise = np.sqrt(corr_prop) * basis @ noise_modes + np.sqrt(1 - corr_prop) * pink_noise
 

@@ -114,7 +114,9 @@ class Array:
         self.name = name  # or str(uuid.uuid4())
         self.dets = dets
         self.dets.index = np.arange(len(self.dets.index))
-        self.dets.loc[:, "array_name"] = self.name
+        # a combined array (name "") keeps the array names of its detectors
+        if self.name or ("array_name" not in self.dets.columns):
+            self.dets.loc[:, "array_name"] = self.name or ""
 
         self.bands = BandList([band for band in bands if band.name in self.dets.band_name.values])
         self.config = config
@@ -338,7 +340,7 @@ class Array:
         if "bands" in c:
             bands = BandList(c["bands"])
         elif "band" in c:
-            bands = BandList([Band(c["band"])])
+            bands = BandList([c["band"]])
         elif "band_name" not in c:
             raise ValueError("Missing parameter 'bands'.")
 
@@ -477,7 +479,7 @@ class Array:
         for i, dim in enumerate(["xi", "eta"]):
             if dim not in dets.columns:
                 dets.loc[:, dim] = 0.0
-            dets.loc[:, dim] += np.radians(focal_plane_offset[i])
+            dets.loc[:, dim] += np.radians(focal_plane_offset[i]) if degrees else focal_plane_offset[i]
 
         if "gamma" not in dets:
             if c.get("polarized", False):
@@ -690,7 +692,8 @@ class ArrayList:
         return np.concatenate([array.mask(**kwargs) for array in self.arrays], axis=0)
 
     def subset(self, **kwargs):
-        return ArrayList([array.subset(**kwargs).dets for array in self.arrays])
+        subsets = [array.subset(**kwargs) for array in self.arrays]
+        return ArrayList([array for array in subsets if array.n > 0])
 
     def summary(self):
         return pd.concat([array.summary() for array in self.arrays], axis=1).T

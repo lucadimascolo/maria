@@ -15,6 +15,24 @@ class NoiseMixin:
     def _run(self):
         self._simulate_noise()
 
+    def _init_noise(self):
+        invalid_kwargs = [key for key in self.noise_kwargs if key not in DEFAULT_NOISE_SIM_KWARGS]
+        if invalid_kwargs:
+            raise ValueError(
+                f"Invalid noise_kwargs {invalid_kwargs}; valid ones are {list(DEFAULT_NOISE_SIM_KWARGS.keys())}."
+            )
+
+        correlated_noise_proportion = self.noise_kwargs["correlated_noise_proportion"]
+        if not 0 <= correlated_noise_proportion <= 1:
+            raise ValueError(
+                f"noise_kwargs['correlated_noise_proportion'] must be between 0 and 1 (got {correlated_noise_proportion})."
+            )
+        correlated_noise_spatial_scale = self.noise_kwargs["correlated_noise_spatial_scale"]
+        if not correlated_noise_spatial_scale > 0:
+            raise ValueError(
+                f"noise_kwargs['correlated_noise_spatial_scale'] must be positive (got {correlated_noise_spatial_scale})."
+            )
+
     def _simulate_noise(self, obs):
 
         noise_loading = np.zeros(shape=obs.shape, dtype=self.dtype)
@@ -32,9 +50,14 @@ class NoiseMixin:
 
             band_mask = obs.instrument.dets.band_name == band.name
 
-            total_NEP = band.NEP.to("W√s") + band.NEP_per_loading.to("W√s") * sum(
-                [d[band_mask].compute() for d in obs.loading.values()]
-            )
+            # the NEP that gives the requested NET depends on the detector's polarization
+            polarized = ~np.isnan(obs.instrument.dets.gamma[band_mask])
+            NEP = np.where(polarized, band._detector_NEP(polarized=True).to("W√s"), band.NEP.to("W√s"))[:, None]
+
+            # NEP_per_loading is the extra NEP (in W√s) per pW of optical loading, added linearly. A detector cannot
+            # absorb negative power, so zero-mean (e.g. CMB or map) loading must not lower the NEP below its base value.
+            loading = sum([d[band_mask].compute() for d in obs.loading.values()])
+            total_NEP = NEP + band.NEP_per_loading.to("W√s") * np.maximum(loading, 0)
 
             band_offsets = obs.instrument.dets.offsets[band_mask]
             fov = compute_diameter(band_offsets)

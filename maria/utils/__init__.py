@@ -89,7 +89,16 @@ def compute_diameter(points, lazy=False, MAX_SAMPLE_SIZE: int = 10000, jitter: f
                 replace=False,
             )
         ]
-    hull = sp.spatial.ConvexHull(X[:, dim_mask])
+    # points along a line, or on a plane in 3D, have no full-dimensional convex hull: use their coordinates in the
+    # subspace they span (the rank is decided by the ratio of the singular values, since rounding gives a short line
+    # or plane away from the origin a full numerical rank)
+    centered = X[:, dim_mask] - X[:, dim_mask].mean(axis=0)
+    _, s, vt = np.linalg.svd(centered, full_matrices=False)
+    rank = int((s > 1e-10 * s[0]).sum())
+    if rank == 1:
+        return float(np.ptp(centered @ vt[0]))
+
+    hull = sp.spatial.ConvexHull(X[:, dim_mask] if rank == dim_mask.sum() else centered @ vt[:rank].T)
     vertices = hull.points[hull.vertices]
     i, j = np.triu_indices(len(vertices), k=1)
 

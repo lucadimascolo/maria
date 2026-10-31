@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import os
 from typing import Mapping
 
@@ -14,6 +15,60 @@ from ..utils import HEX_CODE_LIST, compute_diameter
 from .array import Array, get_array, get_array_config
 
 here, this_filename = os.path.split(__file__)
+
+logger = logging.getLogger("maria")
+
+
+def _bands_are_equivalent(band, other) -> bool:
+    """
+    Whether two bands describe the same passband, efficiency and noise (so that they can share a name).
+    """
+    return bool(
+        np.array_equal(band.nu.Hz, other.nu.Hz)
+        and np.array_equal(band.tau, other.tau)
+        and all(getattr(band, a) == getattr(other, a) for a in ["efficiency", "knee", "gain_error", "time_constant"])
+        and all(
+            np.isclose(band._detector_NEP(pol).to("W√s"), other._detector_NEP(pol).to("W√s"), rtol=1e-9, atol=0)
+            for pol in [False, True]
+        )
+        and np.isclose(band.NEP_per_loading.to("W√s"), other.NEP_per_loading.to("W√s"), rtol=1e-9, atol=0)
+        and (band.spectrum_kwargs == other.spectrum_kwargs)
+        and (getattr(band.spectrum, "region", None) == getattr(other.spectrum, "region", None))
+    )
+
+
+def _resolve_band_name_clashes(arrays: list) -> None:
+    """
+    Different bands with the same name in different arrays would overwrite each other in the instrument's
+    band list, so that all their detectors get the passband and noise of only one of them. Rename each of
+    them to '{array_name}/{band_name}', and relabel the detectors of that array.
+    """
+    entries_by_name = {}
+    for array in arrays:
+        for band in array.bands:
+            entries_by_name.setdefault(band.name, []).append((array, band))
+
+    used_names = set(entries_by_name)
+    for band_name, entries in entries_by_name.items():
+        if all(_bands_are_equivalent(entries[0][1], band) for _, band in entries[1:]):
+            continue
+
+        new_names = []
+        for array, band in entries:
+            new_name = f"{array.name}/{band_name}"
+            suffix = 1
+            while new_name in used_names:
+                suffix += 1
+                new_name = f"{array.name}/{band_name}-{suffix}"
+            used_names.add(new_name)
+            new_names.append(new_name)
+
+            new_band = copy.copy(band)
+            new_band.name = new_name
+            array.bands = BandList([new_band if b is band else b for b in array.bands])
+            array.dets = array.dets.assign(band_name=array.dets.band_name.replace(band_name, new_name))
+
+        logger.warning(f"Arrays define different bands with the same name '{band_name}'; renamed them to {new_names}.")
 
 
 class ArrayList:
@@ -35,13 +90,18 @@ class ArrayList:
                     array_config = get_array_config(**array)
                     self.arrays.append(Array.from_config(array_config))
                 elif isinstance(array, Array):
-                    self.arrays.append(array)
+                    # a new Array, so that renaming its bands does not change the caller's array
+                    self.arrays.append(
+                        Array(name=array.name, dets=array.dets.copy(), bands=array.bands, config=array.config)
+                    )
                 else:
                     raise ValueError("Arrays must be either a string or a mapping")
         elif isinstance(arrays, ArrayList):
             self.arrays = arrays.arrays
         else:
             raise ValueError("Each element of 'arrays' must be either an Array, a string, or a mapping.")
+
+        _resolve_band_name_clashes(self.arrays)
 
     def combine(self):
         array_dets = []
@@ -98,7 +158,8 @@ class ArrayList:
         return np.concatenate([array.mask(**kwargs) for array in self.arrays], axis=0)
 
     def subset(self, **kwargs):
-        return ArrayList([array.subset(**kwargs).dets for array in self.arrays])
+        subsets = [array.subset(**kwargs) for array in self.arrays]
+        return ArrayList([array for array in subsets if array.n > 0])
 
     def summary(self):
         return pd.concat([array.summary() for array in self.arrays], axis=1).T
