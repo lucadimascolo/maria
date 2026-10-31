@@ -453,7 +453,7 @@ class ProjectionMap(Map):
     def _pad_with_zero_sky(self, radius: float, offsets=None):
         """
         The map with zero sky (and, for a weighted map, the weight of the nearest edge pixel, as _smooth gives it with
-        zero_outside) in its pixels without data (of zero weight) and beyond its edges, out to at least
+        zero_outside) in its pixels without data (NaN or of zero weight) and beyond its edges, out to at least
         `radius` (in radians) past the outer pixel centres. Given the (xi, eta) offsets (in radians) of the samples,
         it is padded only as far as they reach beyond the outer pixel centres (and at most `radius`): _smooth with
         zero_outside gives the pixels the same values either way.
@@ -479,9 +479,9 @@ class ProjectionMap(Map):
             pad_width.append(tuple(n_pad))
 
         data, weight = self.data, package.get("weight")
-        # pixels without data (of zero weight) are no sky either: zero sky with the weight of the nearest pixel with
-        # data, as beyond the edges
-        no_data = np.asarray(self.weight == 0)
+        # pixels without data (NaN, or of zero weight) are no sky either: zero sky with the weight of the nearest pixel
+        # with data, as beyond the edges
+        no_data = np.asarray(~np.isfinite(data) | (self.weight == 0))
         if no_data.any():
             data = np.where(no_data, 0, data)
             if weight is not None:
@@ -519,7 +519,8 @@ class ProjectionMap(Map):
 
     def smooth(self, sigma: float = None, fwhm: float = None, degrees: bool = True):
         """
-        Smooth the map with a circular Gaussian beam. The map is reflected about its edges.
+        Smooth the map with a circular Gaussian beam. The map is reflected about its edges. Pixels without data (NaN)
+        do not enter the smoothing, and stay NaN.
         """
         return self._smooth(sigma=sigma, fwhm=fwhm, degrees=degrees)
 
@@ -544,8 +545,12 @@ class ProjectionMap(Map):
 
         data_mode, weight_mode = ("constant", "nearest") if zero_outside else ("reflect", "reflect")
         sigma_pixels = (y_sigma_pixels, x_sigma_pixels)
-        numer = sp.ndimage.gaussian_filter(self.data * self.weight, sigma=sigma_pixels, axes=(-2, -1), mode=data_mode)
-        denom = sp.ndimage.gaussian_filter(self.weight, sigma=sigma_pixels, axes=(-2, -1), mode=weight_mode)
+        # pixels without data (NaN) have no weight, so they do not spread over the kernel
+        finite = np.isfinite(self.data)
+        weight = np.where(finite, self.weight, 0)
+        weighted_data = np.where(finite, self.data, 0) * weight
+        numer = sp.ndimage.gaussian_filter(weighted_data, sigma=sigma_pixels, axes=(-2, -1), mode=data_mode)
+        denom = sp.ndimage.gaussian_filter(weight, sigma=sigma_pixels, axes=(-2, -1), mode=weight_mode)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             package["data"] = np.where(denom > 0, numer / denom, 0)
@@ -554,7 +559,8 @@ class ProjectionMap(Map):
             package["weight"] = denom
 
         package["beam"], beam_area_ratio = self._smoothed_beam(sigma)
-        package["data"] = package["data"] * beam_area_ratio
+        # pixels without data stay without data (NaN), rather than showing the sky of their neighbours
+        package["data"] = np.where(finite, package["data"] * beam_area_ratio, np.nan)
 
         return type(self)(**package)
 

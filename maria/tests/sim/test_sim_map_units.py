@@ -31,9 +31,9 @@ def test_map_beam_varying_along_stokes(simulate_map):
     assert np.allclose(simulate_map(m).run(units="K_RJ")[0].signal.compute(), 1e-3, rtol=1e-3)
 
 
-@pytest.mark.parametrize("no_data", ["zero weight"])
+@pytest.mark.parametrize("no_data", ["zero weight", "NaN", "NaN, weighted"])
 def test_map_pixels_without_data_are_no_sky(simulate_map, no_data):
-    """Pixels without data (of zero weight) are no sky, like the sky beyond the edges of the map: a map of
+    """Pixels without data (of zero weight, or NaN) are no sky, like the sky beyond the edges of the map: a map of
     10 mK_RJ on one half and no data on the other is seen at 10 mK_RJ * erfc(d / sqrt(2) sigma) / 2 a distance d
     past the boundary, i.e. the half map convolved with the beam, and at 0 beyond 4 sigma (the smoothing used to fill
     them with the sky of their neighbours, at full brightness out to 4 sigma)."""
@@ -44,6 +44,9 @@ def test_map_pixels_without_data_are_no_sky(simulate_map, no_data):
     data, weight = 1e-2 * np.ones((n, n)), np.ones((n, n))
     if no_data == "zero weight":
         data[:, 80:], weight[:, 80:] = 5e-3, 0
+    else:
+        data[:, 80:] = np.nan
+        weight = 3 * weight if no_data == "NaN, weighted" else None
     m = ProjectionMap(data=data, weight=weight, resolution=np.degrees(res), nu=150e9, center=CENTER, units="K_RJ")
     for column in [63, 84, 97, 105, 122]:
         d = (column - 79.5) * res

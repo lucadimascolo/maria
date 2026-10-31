@@ -80,3 +80,18 @@ def test_healpix_smooth_polarized(stokes):
     assert np.allclose(m._smooth(fwhm=fwhm, pol=True).data.compute(), 2 * smoothed)
     m.data[:] = 3 * m.data
     assert np.allclose(m._smooth(fwhm=fwhm, pol=True).data.compute(), 6 * smoothed)
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+def test_smooth_nan_pixels(weighted):
+    """NaN pixels have no weight when smoothing, and stay NaN: a constant map with NaN pixels smooths to the same
+    constant, with NaN where it had them (one NaN pixel used to spread NaN over the whole kernel)."""
+    data = np.ones((64, 64))
+    data[10, 20] = data[40:44, 30:33] = np.nan
+    nan = np.isnan(data)
+    weight = np.ones_like(data) if weighted else None
+    m = ProjectionMap(data=data, weight=weight, resolution=0.01, units="K_RJ")
+    for smoothed in [m._smooth(fwhm=0.05, zero_outside=True), m.smooth(fwhm=0.05)]:
+        smoothed = np.asarray(smoothed.data.compute()).reshape(data.shape)
+        assert np.array_equal(np.isnan(smoothed), nan)
+        assert np.allclose(smoothed[10:-10, 10:-10][~nan[10:-10, 10:-10]], 1.0, rtol=1e-5)
