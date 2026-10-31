@@ -28,6 +28,8 @@ logger = logging.getLogger("maria")
 class ProjectionMap(Map):
     """
     A rectangular map projected on the sphere. It has shape (stokes, nu, t, y, x).
+
+    Q and U follow the COSMO (healpy) convention; FITS files with POLCCONV = 'IAU' have their U flipped when loaded.
     """
 
     def __init__(
@@ -133,10 +135,15 @@ class ProjectionMap(Map):
         # parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in self.dims}
         # self.apply_parity(**parity_signature)
 
-    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = False):
+    def _pointing_matrix_ingredients(self, coords: Coordinates, bilinear: bool = False, zero_outside: bool = False):
+        """
+        zero_outside: give samples beyond the outer pixel edges (half a pixel past the outer pixel centres) of the map
+        zero weight, i.e. no signal, instead of the value of the nearest edge pixel. Samples before or after the time
+        range of the map always take its first or last epoch.
+        """
         offsets = coords.offsets(center=(self.center[0].rad, self.center[1].rad), frame=self.frame.name)
 
-        return compute_pointing_matrix_ingredients(
+        samples, pixels, weights, n_pixels, n_samples = compute_pointing_matrix_ingredients(
             x_list=(
                 coords._t,
                 offsets[..., 1],
@@ -145,6 +152,19 @@ class ProjectionMap(Map):
             side_list=(self.t.seconds, self.eta.radians, self.xi.radians),
             bilinear=bilinear,
         )
+
+        if zero_outside:
+            # (the offsets can be a float32 jax array: the mask is made in numpy, so that the weights keep their dtype)
+            inside = np.ones(offsets.shape[:-1], dtype=bool)
+            for x, side in [(np.asarray(offsets[..., 1]), self.eta.radians), (np.asarray(offsets[..., 0]), self.xi.radians)]:
+                if np.size(side) > 1:
+                    # the outer pixel edges, which also works for a descending side
+                    first_edge = side[0] - 0.5 * (side[1] - side[0])
+                    last_edge = side[-1] + 0.5 * (side[-1] - side[-2])
+                    inside &= (x - first_edge) * (x - last_edge) <= 0
+            weights = weights * inside.reshape(weights.shape[1:])
+
+        return samples, pixels, weights, n_pixels, n_samples
 
     def header(self):
 
@@ -158,21 +178,22 @@ class ProjectionMap(Map):
             header[f"NAXIS{dim_index + 1}"] = n
 
         header["BUNIT"] = self.units
-        header["BMAJOR"] = averaged_beam[0].degrees.item()
-        header["BMINOR"] = averaged_beam[1].degrees.item()
+        header["BMAJ"] = averaged_beam[0].degrees.item()
+        header["BMIN"] = averaged_beam[1].degrees.item()
         header["BPA"] = averaged_beam[2].degrees.item()
 
         CTYPE1 = self.frame.fits_phi
-        header["CTYPE1"] = f"{CTYPE1}{(5 - len(CTYPE1)) * '-'}TAN"
+        header["CTYPE1"] = f"{CTYPE1}{(5 - len(CTYPE1)) * '-'}ARC"  # maria maps are zenithal equidistant
         header["CRVAL1"] = self.center[0].deg
-        header["CRPIX1"] = self.xi.size // 2
+        # the 1-based FITS pixel of the centre (zero offset), which a sliced map need not have in its middle
+        header["CRPIX1"] = (self.xi.size + 1) / 2 - (self.xi[0].rad + self.xi[-1].rad) / (2 * self.xi_res.rad)
         header["CDELT1"] = -self.xi_res.deg  # longitude goes the other way
         header["CUNIT1"] = "deg"
 
         CTYPE2 = self.frame.fits_theta
-        header["CTYPE2"] = f"{CTYPE2}{(5 - len(CTYPE2)) * '-'}TAN"
+        header["CTYPE2"] = f"{CTYPE2}{(5 - len(CTYPE2)) * '-'}ARC"
         header["CRVAL2"] = self.center[1].deg
-        header["CRPIX2"] = self.eta.size // 2
+        header["CRPIX2"] = (self.eta.size + 1) / 2 - (self.eta[0].rad + self.eta[-1].rad) / (2 * self.eta_res.rad)
         header["CDELT2"] = self.eta_res.deg
         header["CUNIT2"] = "deg"
 
@@ -183,7 +204,8 @@ class ProjectionMap(Map):
             units = FITS_DEFAULT_UNITS[dim]
 
             if dim == "stokes":
-                dim_values = np.array(["IQUV".index(s) for s in dim_values])
+                # the FITS Stokes codes are I = 1, Q = 2, U = 3, V = 4
+                dim_values = np.array(["IQUV".index(s) + 1 for s in dim_values])
 
             if units:
                 dim_values = dim_values.to(units)
@@ -194,12 +216,12 @@ class ProjectionMap(Map):
                 if not grad.std() / np.abs(delt) < 1e-6:
                     raise RuntimeError("Cannot write irregular maps to FITS")
             else:
-                grad = getattr(self, dim)[0]
-                delt = 0.0
+                delt = 1.0  # any non-zero value, so that the WCS matrix is not singular
 
+            # CRVAL is the value at the first pixel, which is pixel 1 in FITS
             header[f"CTYPE{AXIS}"] = FITS_TYPE_ALIASES[dim][0]
             header[f"CRVAL{AXIS}"] = dim_values[0]
-            header[f"CRPIX{AXIS}"] = 0
+            header[f"CRPIX{AXIS}"] = 1
             header[f"CDELT{AXIS}"] = delt
             header[f"CUNIT{AXIS}"] = units
 
@@ -339,16 +361,24 @@ class ProjectionMap(Map):
         c = Coordinates(other_phi_theta[..., 0], other_phi_theta[..., 1], frame=other_map.frame)
 
         offsets = c.offsets(center=self.center, frame=self.frame)
-        interpolator = sp.interpolate.RegularGridInterpolator(
-            (self.eta.rad, self.xi.rad), np.moveaxis(self.data, (-2, -1), (0, 1)).compute(), bounds_error=False
-        )
 
-        new_values = np.moveaxis(interpolator((offsets[..., 1], offsets[..., 0])), (0, 1), (-2, -1))
+        def interpolate(values):
+            interpolator = sp.interpolate.RegularGridInterpolator(
+                (self.eta.rad, self.xi.rad), np.moveaxis(values, (-2, -1), (0, 1)).compute(), bounds_error=False
+            )
+            return np.moveaxis(interpolator((offsets[..., 1], offsets[..., 0])), (0, 1), (-2, -1))
 
+        # maps in units per pixel (like Jy/pixel) scale with the pixel area, as in reduce()
+        pixel_area_ratio = float(other_map.pixel_area.sr / self.pixel_area.sr)
+        pixel_area_factor = pixel_area_ratio ** -parse_units(self.units)["dimension_vector"]["pixel"]
+
+        # the new map is on the other map's grid, so it is in the other map's frame
         return type(self)(
-            new_values,
+            interpolate(self.data) * pixel_area_factor,
+            weight=interpolate(self._weight) * pixel_area_factor**-2 if self._weight is not None else None,
             units=self.units,
             center=other_map.center,
+            frame=other_map.frame.name,
             **{dim: (getattr(other_map, dim) if dim in ["xi", "eta"] else getattr(self, dim)) for dim in self.dims},
             beam=self.beam,
         )
@@ -397,19 +427,78 @@ class ProjectionMap(Map):
             dims_to_average.append(2 * dim_index + 1)
             trimming_slices.append(dim_trim_slice)
 
-        if self._weight is not None:
-            reduced_data = np.nanmean(self.data[tuple(trimming_slices)].reshape(reduction_shape), dims_to_average)
-        else:
-            reduced_numer = np.nansum(
-                (self.data * self.weight)[tuple(trimming_slices)].reshape(reduction_shape), dims_to_average
-            )
-            reduced_denom = np.nansum(self.weight[tuple(trimming_slices)].reshape(reduction_shape), dims_to_average)
-            reduced_data = reduced_numer / reduced_denom
+        data = self.data[tuple(trimming_slices)].reshape(reduction_shape)
+        weight = self.weight[tuple(trimming_slices)].reshape(reduction_shape)
+        # pixels without data do not count (also in an unweighted map, whose weights are all one)
+        weight = np.where(np.isfinite(data), weight, 0)
+
+        # the weighted mean (the plain mean for an unweighted map, whose weights are all one)
+        reduced_weight = np.nansum(weight, dims_to_average)
+        reduced_data = np.nansum(data * weight, dims_to_average) / reduced_weight
 
         pixel_area_reduction = np.prod([explicit_reduction[dim] for dim in ["xi", "eta"]])
-        reduced_data *= pixel_area_reduction ** -parse_units(self.units)["dimension_vector"]["pixel"]
+        pixel_area_factor = pixel_area_reduction ** -parse_units(self.units)["dimension_vector"]["pixel"]
+        reduced_data *= pixel_area_factor
 
-        return type(self)(data=reduced_data, center=self.center, units=self.units, **new_dims, beam=self.beam)
+        return type(self)(
+            data=reduced_data,
+            weight=reduced_weight * pixel_area_factor**-2 if self._weight is not None else None,
+            center=self.center,
+            frame=self.frame.name,
+            units=self.units,
+            **new_dims,
+            beam=self.beam,
+        )
+
+    def _pad_with_zero_sky(self, radius: float, offsets=None):
+        """
+        The map with zero sky (and, for a weighted map, the weight of the nearest edge pixel, as _smooth gives it with
+        zero_outside) in its pixels without data (NaN or of zero weight) and beyond its edges, out to at least
+        `radius` (in radians) past the outer pixel centres. Given the (xi, eta) offsets (in radians) of the samples,
+        it is padded only as far as they reach beyond the outer pixel centres (and at most `radius`): _smooth with
+        zero_outside gives the pixels the same values either way.
+        """
+        package = self.package()
+        pad_width = [(0, 0)] * (self.ndim - 2)
+        for dim, offset_index in [("eta", 1), ("xi", 0)]:
+            side = getattr(self, dim).deg
+            n_pad = [0, 0]
+            if side.size > 1:
+                n_max = int(np.ceil(radius / abs(getattr(self, f"{dim}_res").rad)))
+                n_pad = [n_max, n_max]
+                if offsets is not None:
+                    # the fractional pixel index of the samples, and the pixels (one more for bilinear sampling) that
+                    # those beyond the outer pixel centres need
+                    index = (np.degrees(np.asarray(offsets[..., offset_index])) - side[0]) / (side[1] - side[0])
+                    reach = [-np.nanmin(index), np.nanmax(index) - (side.size - 1)]
+                    n_pad = [int(np.clip(np.ceil(r) + 1, 0, n_max)) for r in reach]
+            step = side[1] - side[0] if side.size > 1 else 0
+            package[dim] = np.concatenate(
+                [side[0] + step * np.arange(-n_pad[0], 0), side, side[-1] + step * np.arange(1, n_pad[1] + 1)]
+            )
+            pad_width.append(tuple(n_pad))
+
+        data, weight = self.data, package.get("weight")
+        # pixels without data (NaN, or of zero weight) are no sky either: zero sky with the weight of the nearest pixel
+        # with data, as beyond the edges
+        no_data = np.asarray(~np.isfinite(data) | (self.weight == 0))
+        if no_data.any():
+            data = np.where(no_data, 0, data)
+            if weight is not None:
+                weight = np.asarray(weight).copy().reshape(-1, *no_data.shape[-2:])
+                for w, mask in zip(weight, no_data.reshape(weight.shape)):
+                    if mask.all():
+                        w[:] = 1
+                    elif mask.any():
+                        nearest = sp.ndimage.distance_transform_edt(mask, return_distances=False, return_indices=True)
+                        w[:] = w[tuple(nearest)]
+                weight = weight.reshape(no_data.shape)
+
+        package["data"] = da.pad(da.asarray(data), pad_width=pad_width, mode="constant", constant_values=0)
+        if weight is not None:
+            package["weight"] = da.pad(da.asarray(weight), pad_width=pad_width, mode="edge")
+
+        return type(self)(**package)
 
     def zero_pad(self):
 
@@ -429,6 +518,18 @@ class ProjectionMap(Map):
         return type(self)(**package)
 
     def smooth(self, sigma: float = None, fwhm: float = None, degrees: bool = True):
+        """
+        Smooth the map with a circular Gaussian beam. The map is reflected about its edges. Pixels without data (NaN)
+        do not enter the smoothing, and stay NaN.
+        """
+        return self._smooth(sigma=sigma, fwhm=fwhm, degrees=degrees)
+
+    def _smooth(self, sigma: float = None, fwhm: float = None, degrees: bool = True, zero_outside: bool = False):
+        """
+        smooth(), where with zero_outside the sky beyond the edges of the map is zero, as the simulation samples it:
+        the data are smoothed with zeros beyond the edges, and the weight with the nearest edge pixel (so the zero sky
+        counts as much as the edge of the map).
+        """
         if not (sigma is None) ^ (fwhm is None):
             raise ValueError("You must supply exactly one of 'sigma' or 'fwhm'.")
 
@@ -442,14 +543,24 @@ class ProjectionMap(Map):
         x_sigma_pixels = abs(sigma / self.xi_res)
         y_sigma_pixels = abs(sigma / self.eta_res)
 
-        numer = sp.ndimage.gaussian_filter(self.data * self.weight, sigma=(y_sigma_pixels, x_sigma_pixels), axes=(-2, -1))
-        denom = sp.ndimage.gaussian_filter(self.weight, sigma=(y_sigma_pixels, x_sigma_pixels), axes=(-2, -1))
+        data_mode, weight_mode = ("constant", "nearest") if zero_outside else ("reflect", "reflect")
+        sigma_pixels = (y_sigma_pixels, x_sigma_pixels)
+        # pixels without data (NaN) have no weight, so they do not spread over the kernel
+        finite = np.isfinite(self.data)
+        weight = np.where(finite, self.weight, 0)
+        weighted_data = np.where(finite, self.data, 0) * weight
+        numer = sp.ndimage.gaussian_filter(weighted_data, sigma=sigma_pixels, axes=(-2, -1), mode=data_mode)
+        denom = sp.ndimage.gaussian_filter(weight, sigma=sigma_pixels, axes=(-2, -1), mode=weight_mode)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             package["data"] = np.where(denom > 0, numer / denom, 0)
 
         if self._weight is not None:
             package["weight"] = denom
+
+        package["beam"], beam_area_ratio = self._smoothed_beam(sigma)
+        # pixels without data stay without data (NaN), rather than showing the sky of their neighbours
+        package["data"] = np.where(finite, package["data"] * beam_area_ratio, np.nan)
 
         return type(self)(**package)
 
@@ -731,12 +842,14 @@ class ProjectionMap(Map):
         # if self.dims.get("nu", 0) > 1:
         #     logger.warning("Writing a multifrequency maps ")
 
-        fits.writeto(
-            filename=path,
-            data=self.data,
-            header=self.header(),
-            overwrite=True,
-        )
+        header = self.header()
+        hdus = [fits.PrimaryHDU(data=np.asarray(self.data), header=header)]
+
+        # the weight (if any) goes in a second image extension with the same WCS
+        if self._weight is not None:
+            hdus.append(fits.ImageHDU(data=np.asarray(self._weight), header=header, name="WEIGHT"))
+
+        fits.HDUList(hdus).writeto(path, overwrite=True)
 
     def to_hdf(self, filename: str, compress: bool = True):
         compression_kwargs = {"compression": "gzip", "compression_opts": 9} if compress else {}

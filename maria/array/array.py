@@ -204,7 +204,9 @@ class Array:
 
     def mueller(self):
         """
-        For transforming Stoke's parameters. $theta$ = 0 is the horizontal
+        For transforming Stokes parameters: a detector with polarization angle gamma sees
+        (I + Q cos 2 gamma + U sin 2 gamma) / 2, so gamma = 0 couples to +Q (polarization along north-south) and
+        gamma = 45 degrees to +U. Q and U follow the COSMO (healpy) convention. A plan roll adds to gamma.
         """
         a = self.gamma
         m = np.stack(
@@ -541,8 +543,10 @@ class Array:
                 # baselines = Quantity(band_array.baselines, "m")
 
                 if plot_gammas and self.polarized:
-                    dx = np.c_[-np.ones(band_array.n), np.ones(band_array.n)] / 2
-                    dy = np.zeros((band_array.n, 2))
+                    # gamma = 0 couples to +Q, which is along eta (north-south at transit); R(gamma) then turns the
+                    # line towards -xi (west), as +U (COSMO)
+                    dx = np.zeros((band_array.n, 2))
+                    dy = np.c_[-np.ones(band_array.n), np.ones(band_array.n)] / 2
 
                     R = get_rotation_matrix_2d(gammas.rad)
                     dl = np.moveaxis(R @ np.stack([dx, dy], axis=1), 0, 2)

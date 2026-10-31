@@ -24,7 +24,11 @@ CMB_SOURCES = {
 }
 
 
-def get_cmb_spectrum(source="camb"):
+def get_cmb_spectrum(source="lensed"):
+    """
+    The CMB power spectrum table: "lensed" (the lensed Planck spectrum, used by generate_cmb) or "camb" (whose
+    columns are mislabelled; its TT is 7-29% above the lensed one below ell 1000).
+    """
     cmb_spectrum_path = fetch(
         CMB_SOURCES[source]["spectrum"],
         max_age=CMB_SPECTRUM_CACHE_MAX_AGE,
@@ -33,26 +37,30 @@ def get_cmb_spectrum(source="camb"):
     return pd.read_csv(cmb_spectrum_path, index_col=0)
 
 
-def generate_cmb(nside: int = 1024, lmax: int = None, source: str = "lensed", seed: int = 123456, **kwargs):
+def generate_cmb(nside: int = 1024, lmax: int = None, source: str = "lensed", seed: int = 123456):
     """
     Generate a new CMB.
 
     Taken from https://www.zonca.dev/posts/2020-09-30-planck-spectra-healpy.html
     """
 
-    np.random.seed(seed)
-
     cl = get_cmb_spectrum(source=source)
     lmax = lmax or int(np.pi / hp.pixelfunc.nside2resol(nside))
 
-    alm = hp.synalm((cl.TT, cl.EE, cl.BB, cl.TE), lmax=lmax, new=True)
+    # healpy draws from the global NumPy RNG, so seed it for the draw only and then restore it
+    global_rng_state = np.random.get_state()
+    try:
+        np.random.seed(seed)
+        alm = hp.synalm((cl.TT, cl.EE, cl.BB, cl.TE), lmax=lmax, new=True)
+    finally:
+        np.random.set_state(global_rng_state)
     cmb_data = hp.alm2map(alm, nside=nside, lmax=lmax)
 
     return HEALPixMap(
         data=cmb_data[:, None, None, :],
         stokes="IQU",
         units="K_CMB",
-        frame="galactic",
+        frame="ra/dec",  # the generated CMB is isotropic, so the frame is a label; ra/dec avoids a transform
         z=z_CMB,
     )
 
@@ -66,6 +74,9 @@ def generate_cmb_patch(
     degrees: bool = True,
     buffer: int = 2,
 ):
+    """
+    Generate a flat-sky CMB temperature patch (in K_CMB), drawn from the global NumPy RNG.
+    """
     width = Quantity(width, "deg" if degrees else "rad").rad
     height = Quantity(height, "deg" if degrees else "rad").rad if height is not None else width
     resolution = Quantity(resolution, "deg" if degrees else "rad").rad if resolution is not None else width / 256
@@ -85,19 +96,27 @@ def generate_cmb_patch(
 
     kx = np.fft.fftfreq(nx_gen, dx)
     ky = np.fft.fftfreq(ny_gen, dy)
-    KY, KX = np.meshgrid(ky, kx)
+    KX, KY = np.meshgrid(kx, ky)  # shape (ny_gen, nx_gen), like the map
     K = np.sqrt(KX**2 + KY**2)
 
-    cmb_spectrum = get_cmb_spectrum()
+    # the same (lensed) spectrum as generate_cmb; the "camb" table has mislabelled columns
+    cmb_spectrum = get_cmb_spectrum(source="lensed")
     PS = sp.interpolate.interp1d(cmb_spectrum.ell.values, cmb_spectrum.TT.values, bounds_error=False, fill_value=0)(
         2 * np.pi * K
     )
 
-    PS /= resolution**2  # convert from uK^2 radians^2 to uK^2 pixels^2
+    PS /= dx * dy  # convert from K^2 radians^2 to K^2 pixels^2
 
     complex_map = np.fft.ifft2(np.sqrt(PS) * np.fft.fft2(np.random.standard_normal((ny_gen, nx_gen))))
-    m = complex_map.real[:nx, :ny]
+    m = complex_map.real[:ny, :nx]
 
     return ProjectionMap(
-        data=(m - m.mean())[None], center=center, width=width, nu=148e9, frame=frame, units="K_CMB", degrees=False
+        data=(m - m.mean())[None],
+        center=center,
+        xi_res=dx,
+        eta_res=dy,
+        nu=148e9,
+        frame=frame,
+        units="K_CMB",
+        degrees=False,
     )

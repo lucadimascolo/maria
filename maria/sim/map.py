@@ -8,6 +8,8 @@ import arrow
 import dask.array as da
 import numpy as np
 import scipy as sp
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 from jax import jit
 from jax import scipy as jsp
 from tqdm import tqdm
@@ -15,8 +17,9 @@ from tqdm import tqdm
 from ..beam import compute_angular_fwhm
 from ..calibration import Calibration
 from ..constants import k_B
+from ..coords import offsets_to_phi_theta
 from ..io import DEFAULT_BAR_FORMAT, DEFAULT_TIME_FORMAT, humanize_time
-from ..map import HEALPixMap, Map, get
+from ..map import HEALPixMap, Map, ProjectionMap, get
 from ..units import Quantity
 
 here, this_filename = os.path.split(__file__)
@@ -25,6 +28,23 @@ logger = logging.getLogger("maria")
 DEFAULT_MAP_SIM_KWARGS = {
     "bilinear_sampling": False,
 }
+
+
+def _refer_polarization_to_celestial_north(m: ProjectionMap):
+    """
+    Rotate Q and U of a galactic ProjectionMap (inplace) from galactic to celestial north, by twice the position angle
+    of galactic north at each pixel (with the COSMO convention of healpy, as for HEALPix maps).
+    """
+    offsets = np.stack(np.meshgrid(m.xi.rad, m.eta.rad), axis=-1)
+    phi_theta = np.asarray(offsets_to_phi_theta(offsets, m.center[0].rad, m.center[1].rad))
+    pixels = SkyCoord(l=phi_theta[..., 0] * u.rad, b=phi_theta[..., 1] * u.rad, frame="galactic").icrs
+    psi = pixels.position_angle(SkyCoord(l=0 * u.deg, b=90 * u.deg, frame="galactic").icrs).rad
+    cos, sin = np.cos(2 * psi), np.sin(2 * psi)
+
+    data = np.array(m.data)
+    iq, iu = (list(m.stokes).index(stokes) for stokes in "QU")
+    data[iq], data[iu] = cos * data[iq] + sin * data[iu], cos * data[iu] - sin * data[iq]
+    m.data = da.asarray(data)
 
 
 class MapMixin:
@@ -36,8 +56,14 @@ class MapMixin:
 
     def _initialize_map(self, map: str | Map, **map_kwargs):
         if isinstance(map, str):
-            m = get(map, **map_kwargs)
+            # the simulation settings are not map metadata
+            m = get(map, **{k: v for k, v in map_kwargs.items() if k not in DEFAULT_MAP_SIM_KWARGS})
         elif isinstance(map, Map):
+            invalid_kwargs = [key for key in map_kwargs if key not in DEFAULT_MAP_SIM_KWARGS]
+            if invalid_kwargs:
+                raise ValueError(
+                    f"Invalid map_kwargs {invalid_kwargs}; valid ones are {list(DEFAULT_MAP_SIM_KWARGS.keys())}."
+                )
             m = map.copy()
         else:
             raise ValueError("'map' must be either a Map or a string")
@@ -71,6 +97,10 @@ class MapMixin:
         parity_signature = {dim: (-1 if dim in ["v", "eta"] else 1) for dim in m.dims}
         m.apply_parity(**parity_signature)
 
+        # Q and U of every map refer to celestial north (those of galactic HEALPix maps are rotated when smoothed)
+        if isinstance(m, ProjectionMap) and m.frame.name == "galactic" and {"Q", "U"} <= set(m.stokes):
+            _refer_polarization_to_celestial_north(m)
+
         self.maps["map"] = m
 
     def _run(self, **kwargs):
@@ -81,24 +111,31 @@ class MapMixin:
         for map_name, m in self.maps.items():
             map_loading = np.zeros(obs.coords.shape, dtype=self.dtype)
 
+            # the detectors of one band can sit behind different apertures, which give them different beams
+            primary_sizes = np.asarray(obs.instrument.dets.primary_size)
+            band_groups = []
+            for band in obs.instrument.dets.bands:
+                in_band = np.asarray(obs.instrument.dets.band_name == band.name)
+                for primary_size in np.unique(primary_sizes[in_band]):
+                    band_groups.append((band, in_band & (primary_sizes == primary_size), primary_size))
+
             bands_pbar = tqdm(
-                obs.instrument.dets.bands,
+                band_groups,
                 desc=f"Sampling source '{map_name}'",
                 disable=self.disable_progress_bars,
                 bar_format=DEFAULT_BAR_FORMAT,
                 ncols=250,
                 postfix={"band": "", "channel": "", "stokes": ""},
             )
-            for band in bands_pbar:
+            for band, band_mask, primary_size in bands_pbar:
                 bands_pbar.set_postfix(band=band.name)
 
-                band_mask = obs.instrument.dets.band_name == band.name
                 band_coords = obs.coords[band_mask]
                 band_dets = obs.instrument.dets[band_mask]
 
                 band_fwhm = Quantity(
                     compute_angular_fwhm(
-                        fwhm_0=obs.instrument.dets.primary_size.mean(),
+                        fwhm_0=primary_size,
                         z=np.inf,
                         nu=band.center.Hz,
                     ),
@@ -107,21 +144,49 @@ class MapMixin:
 
                 # ideally we would do this for each nu bin, but that's slow
 
-                if not isinstance(m, HEALPixMap):
-                    smoothed_map = m.smooth(fwhm=band_fwhm)
-                else:
-                    smoothed_map = m
+                # the map is already convolved with its own beam (e.g. the BMAJ of a FITS file), so it only needs the
+                # rest of the band beam; we use its widest (major) beam axis over all channels
+                map_fwhm = float(np.max(m.beam.rad[..., 0]))
+                if map_fwhm > band_fwhm.rad:
+                    logger.warning(
+                        f"The beam of map '{map_name}' ({Quantity(map_fwhm, 'rad')}) is wider than the beam of band "
+                        f"{band.name} ({band_fwhm}); the map is not smoothed for this band."
+                    )
+                kernel_fwhm = Quantity(np.sqrt(max(band_fwhm.rad**2 - map_fwhm**2, 0)), "rad")
 
-                logger.debug(f"Convolved map with beam width {band_fwhm} for band {band.name}")
+                if isinstance(m, HEALPixMap):
+                    # full-sky smoothing is slow, so do it once per beam and map data for all observations (Q and U
+                    # as a spin-2 field). Polarized galactic maps are rotated to ra/dec, so that Q and U of every map
+                    # refer to the same (celestial) north.
+                    key = (map_name, float(kernel_fwhm.rad))
+                    # (the map is kept with its data key, so that a new map or an edit of its data is not missed)
+                    cached_map, cached_data, smoothed_map = self._smoothed_healpix_maps.get(key, (None, None, None))
+                    if cached_map is not m or cached_data != m._data_key():
+                        polarized = "stokes" in m.dims and {"Q", "U"} <= set(m.stokes)
+                        frame = "ra/dec" if polarized and m.frame.name == "galactic" else None
+                        smoothed_map = m._smooth(fwhm=kernel_fwhm, pol=True, frame=frame)
+                        self._smoothed_healpix_maps[key] = (m, m._data_key(), smoothed_map)
+                else:
+                    # the sky is zero beyond the edges of the map, and the beam spreads the sky near the edges past
+                    # them: the map is padded with zero sky out to the extent of the smoothing kernel (4 sigma), or
+                    # only as far as the samples reach
+                    kernel_sigma = kernel_fwhm.rad / np.sqrt(8 * np.log(2))
+                    offsets = band_coords.offsets(center=(m.center[0].rad, m.center[1].rad), frame=m.frame.name)
+                    padded_map = m._pad_with_zero_sky(radius=4 * kernel_sigma, offsets=offsets)
+                    smoothed_map = padded_map._smooth(fwhm=kernel_fwhm, zero_outside=True)
+
+                logger.debug(f"Convolved map with beam width {kernel_fwhm} for band {band.name}")
 
                 bands_pbar.set_postfix(band=band.name, message=f"Computing pointing matrix")
 
                 pointing_s = ttime.monotonic()
 
-                P = m[:, 0].stokes_weighted_pointing_matrix(
+                # there is no sky signal beyond the edges of the (padded) map
+                P = smoothed_map[:, 0]._stokes_weighted_pointing_matrix(
                     coords=band_coords,
                     dets=band_dets,
                     bilinear=self.map_kwargs.get("bilinear_sampling", DEFAULT_MAP_SIM_KWARGS["bilinear_sampling"]),
+                    zero_outside=True,
                 )
                 logger.debug(
                     f"Computed pointing matrix for band {band.name} in {humanize_time(ttime.monotonic() - pointing_s)}"
@@ -144,9 +209,13 @@ class MapMixin:
                     calibration_s = ttime.monotonic()
 
                     if hasattr(obs, "atmosphere"):
+                        # channel edges inside the band are added to the grid, so that adjacent channels partition it
                         nu = obs.atmosphere.spectrum.side_nu.Hz
-                        channel_nu_mask = (nu >= nu_min) & (nu <= nu_max)
-                        channel_nu = nu[channel_nu_mask]
+                        channel_edges = [x for x in (nu_min, nu_max) if band.nu.Hz.min() < x < band.nu.Hz.max()]
+                        channel_nu = np.unique([*nu[(nu >= nu_min) & (nu <= nu_max)], *channel_edges])
+                        channel_opacity = sp.interpolate.interp1d(nu, obs.atmosphere.spectrum.fields["opacity"], axis=-1)(
+                            channel_nu
+                        )
 
                         instrument_transmission = band.passband(channel_nu)
 
@@ -158,11 +227,9 @@ class MapMixin:
 
                         static_transmission = instrument_transmission * static_atmospheric_transmission
 
-                        f_grid = (
-                            instrument_transmission
-                            * np.exp(-obs.atmosphere.spectrum.fields["opacity"][..., channel_nu_mask])
-                            * static_transmission
-                        ).sum(axis=-1) / (static_transmission**2).sum(axis=-1)
+                        f_grid = (instrument_transmission * np.exp(-channel_opacity) * static_transmission).sum(axis=-1) / (
+                            static_transmission**2
+                        ).sum(axis=-1)
 
                         xi = (
                             obs.atmosphere.weather.effective_temperature.K,
@@ -175,7 +242,8 @@ class MapMixin:
                         )(xi)
 
                     else:
-                        channel_nu = np.linspace(band.nu.Hz.min(), band.nu.Hz.max(), 100)
+                        # integrate over the part of the band that falls in this channel
+                        channel_nu = np.linspace(nu_min, nu_max, 100)
                         static_atmospheric_transmission = np.zeros_like(channel_nu)
 
                         static_transmission = band.passband(channel_nu)
@@ -187,8 +255,15 @@ class MapMixin:
                         channel_map_data, weights=channel_map.weight.compute(), method="inverted_cdf", q=[0, 100]
                     )
 
-                    # the calibration might need these to compute T_RJ, so give them just to be safe
-                    map_calibration_kwargs = {"pixel_area": channel_map.pixel_area.sr, "beam_area": channel_map.beam_area.sr}
+                    # the calibration might need these to compute T_RJ; it takes scalar areas, so a map in units per
+                    # beam needs a single beam per channel
+                    beam_areas = np.unique(channel_map.beam_area.sr)
+                    if beam_areas.size > 1 and channel_map.u["physical_quantity"] == "spectral_flux_density_per_beam":
+                        raise ValueError(f"The beam of map channel {channel_string} varies along the other dimensions.")
+                    map_calibration_kwargs = {
+                        "pixel_area": float(channel_map.pixel_area.sr),
+                        "beam_area": float(beam_areas[0]),
+                    }
 
                     map_values_trj_spectrum = Calibration(f"{channel_map.units} -> K_RJ", **map_calibration_kwargs)(
                         map_values[:, None], nu=channel_nu

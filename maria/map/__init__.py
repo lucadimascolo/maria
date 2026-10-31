@@ -3,12 +3,15 @@ from __future__ import annotations
 import logging
 import os
 import re
+import warnings
 
+import dask.array as da
 import h5py
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
 from astropy.io import fits
+from astropy.wcs import WCS, FITSFixedWarning
 from matplotlib.colors import ListedColormap
 
 from ..coords import frames
@@ -65,7 +68,10 @@ def load(filename: str, index: int = None, format: str = "auto", **map_kwargs) -
 
     if format == "fits":
         data, axis_mask, kwargs, header = read_fits_map(filename, index=index, strict=False)
-        data = np.squeeze(data, tuple([i for i in range(data.ndim) if not axis_mask[i]]))
+        squeezed_axes = tuple([i for i in range(data.ndim) if not axis_mask[i]])
+        data = np.squeeze(data, squeezed_axes)
+        if "weight" in kwargs:
+            kwargs["weight"] = np.squeeze(kwargs["weight"], squeezed_axes)
     elif format == "h5":
         data, kwargs = read_hdf_map(filename)
     else:
@@ -74,6 +80,7 @@ def load(filename: str, index: int = None, format: str = "auto", **map_kwargs) -
     # if there are any kwargs specifying the size of the map
     # remove size kwargs from the read-in map's metadata
     # so that they overwrite the size
+    file_xi, file_eta = (kwargs.get("xi"), kwargs.get("eta")) if format == "fits" else (None, None)
     overridden_size_kwargs = {}
     overriding_size_kwargs = {k: v for k, v in map_kwargs.items() if k in MAP_SIZE_KWARGS}
     if overriding_size_kwargs:
@@ -85,10 +92,34 @@ def load(filename: str, index: int = None, format: str = "auto", **map_kwargs) -
             f"Passed map size kwargs {overriding_size_kwargs} will overwrite map size metadata {overridden_size_kwargs}"
         )
 
+    # a FITS map is placed by its reference pixel, which need not be in its middle; a center or a size passed here
+    # applies to the middle of the map, as for a map without a reference pixel
+    if file_xi is not None and file_eta is not None and ("center" in map_kwargs or overriding_size_kwargs):
+        if "center" not in map_kwargs:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FITSFixedWarning)
+                # only the two sky axes: a degenerate extra axis (CDELT = 0) makes the full WCS singular
+                wcs = WCS(header, naxis=2)
+            phi, theta = wcs.wcs_pix2world([[(file_xi.size - 1) / 2, (file_eta.size - 1) / 2]], 0)[0]
+            kwargs["center"] = (float(phi), float(theta))
+        if not overriding_size_kwargs:
+            kwargs["xi"] = file_xi - (file_xi[0] + file_xi[-1]) / 2
+            kwargs["eta"] = file_eta - (file_eta[0] + file_eta[-1]) / 2
+
     kwargs.update(map_kwargs)
     logger.debug(f"Loading ProjectionMap with kwargs {kwargs}")
 
-    return ProjectionMap(data=data, **kwargs)
+    m = ProjectionMap(data=data, **kwargs)
+
+    # maria's Q and U follow the COSMO (healpy) convention, whose U is minus the IAU one
+    if format == "fits" and str(header.get("POLCCONV", "")).strip().upper() == "IAU":
+        if "stokes" in m.dims and "U" in m.stokes:
+            logger.info(f"Flipping the sign of U of '{filename}' from the IAU to the COSMO convention.")
+            data = np.array(m.data)
+            data[list(m.stokes).index("U")] *= -1
+            m.data = da.asarray(data)
+
+    return m
 
 
 def read_hdf_map(filename: str):
