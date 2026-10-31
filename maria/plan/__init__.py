@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 from typing import Union
 
@@ -61,7 +62,7 @@ class UnsupportedPlanError(Exception):
 def get_plan_config(plan_name="ten_second_zenith_stare", **kwargs):
     if plan_name not in PLAN_CONFIGS.keys():
         raise UnsupportedPlanError(plan_name)
-    plan_config = PLAN_CONFIGS[plan_name].copy()
+    plan_config = deepcopy(PLAN_CONFIGS[plan_name])
     for k, v in kwargs.items():
         plan_config[k] = v
     return plan_config

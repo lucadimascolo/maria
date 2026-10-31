@@ -6,7 +6,7 @@ import astropy as ap
 import numpy as np
 import scipy as sp
 
-from ..coords import Coordinates
+from ..coords import Coordinates, Frame
 from ..errors import NoSuitablePlansError, PointingError
 from ..site import Site, get_site
 from ..units import Quantity
@@ -53,6 +53,9 @@ class Planner:
             elif key == "hour":
                 self.constraints[key] = value
             elif key == "min_sun_distance":
+                # the sun distance of a target fixed in az/el changes during the day and is not computed
+                if Frame(self.target.frame).name == "az/el":
+                    raise ValueError("'min_sun_distance' needs a target in a sky frame (ra/dec or galactic), not az/el")
                 self.constraints[key] = Quantity(value, "deg")
             else:
                 raise ValueError(f"constraint keys must be one of {CONSTRAINT_KEYS}")
@@ -124,9 +127,15 @@ class Planner:
             sun_sample_t = self.start_time.timestamp() + year_fraction_samples * YEAR_SECONDS.s
 
             sun = ap.coordinates.get_sun(ap.time.Time(sun_sample_t, format="unix"))
-            sun_distance_samples = great_circle_distance(
-                self.target.center[0].rad, self.target.center[1].rad, sun.ra.rad, sun.dec.rad
+            # the sun is in ra/dec, so the target center must be too
+            target_center = Coordinates(
+                phi=self.target.center[0].rad,
+                theta=self.target.center[1].rad,
+                t=self.start_time.timestamp(),
+                frame=self.target.frame,
+                earth_location=self.site.earth_location,
             )
+            sun_distance_samples = great_circle_distance(target_center.ra, target_center.dec, sun.ra.rad, sun.dec.rad)
 
             self.sun_distance_test = Quantity(
                 sp.interpolate.interp1d(year_fraction_samples, sun_distance_samples)(year_fraction_test), "rad"
@@ -145,8 +154,13 @@ class Planner:
         for start, end in grouper(
             self.mask, min_length=test_points_per_chunk, max_length=test_points_per_chunk + 1, overlap=True
         ):
+            # the test points start, ..., end - 1 satisfy the constraints (end is the first one that does not, or
+            # the end of the lookahead), so the chunk must end at the last good test point
+            if end - start < test_points_per_chunk:
+                continue
+
             this_chunk_duration = np.min(
-                [max_chunk_duration, self.delta_t_test[end] - self.delta_t_test[start], total_duration - duration]
+                [max_chunk_duration, self.delta_t_test[end - 1] - self.delta_t_test[start], total_duration - duration]
             )
 
             debug_str_parts = [f"start = {arrow.get(self.start_time.timestamp() + self.delta_t_test[start])}"]
@@ -168,10 +182,10 @@ class Planner:
         return chunks
 
     def generate_plans(
-        self, total_duration: float, max_chunk_duration: float = 1800, scan_parameters: Mapping = {}, **plan_kwargs
+        self, total_duration: float, max_chunk_duration: float = 1800, scan_parameters: Mapping = None, **plan_kwargs
     ):
 
-        scan_parameters = parse_scan_kwargs(scan_parameters, default_radius=self.target.width.deg / 2)
+        scan_parameters = parse_scan_kwargs(scan_parameters or {}, default_radius=self.target.width.deg / 2)
 
         # scan_parameters["radius"] = scan_parameters.get("radius", self.target.width.deg / 2)
 

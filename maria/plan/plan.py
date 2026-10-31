@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from copy import deepcopy
 from pathlib import Path
 
 import arrow
@@ -46,6 +47,14 @@ all_plans = list(plan_data.index.values)
 
 
 def parse_scan_parameters(parameters):
+    """
+    Split scan parameters into the kwargs of the plan (frame, center, offsets) and those of the scan pattern.
+
+    The frame is inferred from the names of the parameters (e.g. 'az_center' -> 'az/el'), and parameters in different
+    frames raise a ValueError. With 'radius', the pattern is made of offsets on the sky and 'speed' is an on-sky speed.
+    With '<lon>_throw'/'<lat>_throw' (e.g. 'az_throw'), the pattern is added to the coordinates themselves, and 'speed' is
+    the rate of change of the coordinate: for 'az_throw', the on-sky speed is speed * cos(el).
+    """
 
     params = parameters.copy()
 
@@ -64,10 +73,10 @@ def parse_scan_parameters(parameters):
             for frame, entry in frames.T.iterrows():
                 key = f"{entry[coord]}_{spec}"
                 if key in params:
-                    if scan_pattern_kwargs.get("frame", frame) == frame:
+                    if params.get("frame", frame) == frame:
                         params["frame"] = frame
                     else:
-                        raise ValueError("Multiple frames!")
+                        raise ValueError(f"Scan parameters in multiple frames ({params['frame']!r} and {frame!r}).")
                     params[f"{dim}_{spec}"] = params.pop(key)
 
                     if spec == "throw":
@@ -117,31 +126,39 @@ class Plan:
         jitter: float = 0.0,
         roll: float = 0.0,
         scan_type: str = "daisy",
-        scan_parameters: dict = {},
+        scan_parameters: dict = None,
         frame: str = None,
         scan_center: tuple[float, float] = None,
     ):
 
         duration = Quantity(duration, "s")
 
+        # copy, so that neither the caller's dict nor a plan config is modified below
+        scan_parameters = deepcopy(scan_parameters) if scan_parameters is not None else {}
+
         if frame is not None and scan_center is not None:
             # warnings.warn("deprecated", DeprecationWarning)
 
             frame = Frame(frame)
+
+            # an explicit scan center replaces any center in the scan parameters (e.g. from a plan config)
+            for _, entry in frames.T.iterrows():
+                for coord in ["phi", "theta"]:
+                    scan_parameters.pop(f"{entry[coord]}_center", None)
 
             scan_parameters[f"{frame.phi['name']}_center"] = scan_center[0]
             scan_parameters[f"{frame.theta['name']}_center"] = scan_center[1]
 
         infer_sample_rate = False
         if sample_rate is None:
-            if instrument is None:
-                logger.warning("No sample rate passed, assuming 100 Hz")
-                sample_rate = 100
-                infer_sample_rate = True
-            elif isinstance(instrument, str):
+            if isinstance(instrument, str):
                 instrument = get_instrument(instrument)
-            elif not isinstance(instrument, Instrument):
+            elif instrument is not None and not isinstance(instrument, Instrument):
                 raise TypeError()
+            # instruments do not define a sample rate, so the default is used with or without one
+            logger.warning("No sample rate passed, assuming 100 Hz")
+            sample_rate = 100
+            infer_sample_rate = True
 
         sample_rate = Quantity(sample_rate, "Hz")
 
@@ -154,9 +171,11 @@ class Plan:
         start_time = arrow.get(start_time)
 
         time_min = start_time.timestamp()
-        time_max = time_min + duration.seconds
 
-        time = np.arange(time_min, time_max, 1 / sample_rate.Hz)
+        # n samples at exact multiples of the sample period from the start: np.arange on absolute unix times would
+        # quantize the step to the float64 resolution of the start time (2.4e-7 s) and accumulate the error
+        n_samples = int(np.ceil(np.round(duration.seconds * sample_rate.Hz, 6)))
+        time = time_min + np.arange(n_samples) / sample_rate.Hz
 
         # # convert radius to width / height
         # if "width" in self.scan_parameters:
@@ -195,41 +214,6 @@ class Plan:
 
         return self
 
-        # TODO: scan speed checks in az/el frame
-
-        # scan_velocity = np.gradient(
-        #     self.scan_offsets,
-        #     axis=1,
-        #     edge_order=0,
-        # ) / np.gradient(self.time)
-
-        # scan_acceleration = np.gradient(
-        #     scan_velocity,
-        #     axis=1,
-        #     edge_order=0,
-        # ) / np.gradient(self.time)
-
-        # self.max_vel_deg = np.degrees(np.sqrt(np.sum(scan_velocity**2, axis=0)).max())
-        # self.max_acc_deg = np.degrees(np.sqrt(np.sum(scan_acceleration**2, axis=0)).max())
-
-        # if self.max_vel_deg > MAX_VELOCITY_WARN:
-        #     logger.warning(
-        #         (
-        #             f"The maximum velocity of the boresight ({self.max_vel_deg:.01f} deg/s) is "
-        #             "physically unrealistic. If this is undesired, double-check the parameters for your scan strategy."
-        #         ),
-        #         stacklevel=2,
-        #     )
-
-        # if self.max_acc_deg > MAX_ACCELERATION_WARN:
-        #     logger.warning(
-        #         (
-        #             f"The maximum acceleration of the boresight ({self.max_acc_deg:.01f} deg/s^2) is "
-        #             "physically unrealistic. If this is undesired, double-check the parameters for your scan strategy."
-        #         ),
-        #         stacklevel=2,
-        #     )
-
     def __init__(
         self,
         time: float,
@@ -242,6 +226,7 @@ class Plan:
         longitude: float = None,  # in degrees
         altitude: float = 0,  # in meters
     ):
+        self.site = None
         if site is not None:
             if isinstance(site, str):
                 site = get_site(site)
@@ -309,7 +294,11 @@ class Plan:
 
     @property
     def dt(self):
-        return np.median(np.diff(self.coords.t))
+        # the mean step between consecutive samples (skipping gaps): single steps between absolute unix times are
+        # quantized to their float64 resolution (2.4e-7 s), so their median is off by up to 1e-4 at 1 kHz
+        steps = np.diff(self.coords.t)
+        median_step = np.median(steps)
+        return np.mean(steps[np.abs(steps - median_step) < 0.5 * median_step])
 
     @property
     def sample_rate(self):
@@ -523,11 +512,11 @@ class Plan:
     {ctheta_repr}"""
 
         if not self.naive:
-            repr_lat, repr_lon = repr_lat_lon(self.site.latitude.degrees, self.site.longitude.degrees)
+            repr_lat, repr_lon = repr_lat_lon(self.earth_location.lat.deg, self.earth_location.lon.deg)
             location_string = f"""
     lat: {repr_lat}
     lon: {repr_lon}
-    alt: {self.site.altitude}"""
+    alt: {Quantity(self.earth_location.height.to("m").value, "m")}"""
             if self.frame.name != "az/el":
                 caz, cel = self.center(frame="az/el")
                 center_string = f"""center:
@@ -554,11 +543,21 @@ class Plan:
 
         assert self.end_time < other.start_time
 
+        if other.frame.name != self.frame.name:
+            raise ValueError(f"Cannot add plans in different frames ('{self.frame.name}' and '{other.frame.name}').")
+        if other.roll != self.roll:
+            raise ValueError(f"Cannot add plans with different rolls ({self.roll} and {other.roll}).")
+
         time = np.r_[self.time, other.time]
         phi = np.r_[self.phi, other.phi]
         theta = np.r_[self.theta, other.theta]
 
-        return Plan(time=time, phi=phi, theta=theta, frame=self.frame.name, site=self.site)
+        location_kwargs = {"site": self.site}
+        if self.site is None and not self.naive:
+            loc = self.earth_location
+            location_kwargs = {"latitude": loc.lat.deg, "longitude": loc.lon.deg, "altitude": loc.height.to("m").value}
+
+        return Plan(time=time, phi=phi, theta=theta, roll=self.roll, frame=self.frame.name, **location_kwargs)
 
     def __radd__(self, other):
         return other.__add__(self)

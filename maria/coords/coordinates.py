@@ -26,6 +26,7 @@ from .transforms import (
     phi_theta_to_offsets,
     phi_theta_to_xyz,
     unjitted_offsets_to_phi_theta,
+    unjitted_phi_theta_to_xyz,
     xyz_to_phi_theta,
 )
 
@@ -41,10 +42,29 @@ DEFAULT_EARTH_LOCATION = EarthLocation.from_geodetic(
 )  # noqa
 DEFAULT_TIMESTAMP = arrow.now().timestamp()
 
+# spacing of the time nodes at which the frame transforms are computed exactly (the Earth turns 0.25 deg in 60 s)
+_TRANSFORM_NODE_SPACING_SECONDS = 60.0
+
 
 class Coordinates:
     """
     A class for managing coordinates, allowing us to access different coordinate frames at once.
+
+    Azimuth and elevation are geometric (vacuum) positions: atmospheric refraction is not modelled, and the conversion
+    to ra/dec (ICRS) and galactic coordinates matches astropy's AltAz frame with pressure=0. Real telescope pointing is
+    usually given as apparent (refracted) positions, which differ by ~1' at an elevation of 30 degrees.
+
+    The conversions to other frames are a 3x3 matrix fitted on fiducial points around the center of the coordinates
+    (or around the boresight, for coordinates made by `broadcast` and their slices), computed with astropy every 60
+    seconds of absolute time and interpolated in between. They agree with astropy to ~0.1" near that center while it
+    stays within ~5 degrees over +-2 minutes. The error grows with the distance from the center (~0.3" at 10 degrees,
+    ~1" at 20 degrees) and with the motion of the center: for back-and-forth azimuth scans at 30-70 degrees
+    elevation it is up to ~0.5" for a +-10 degree throw, ~0.2-1.8" for +-20 degrees and ~2-12" for +-60 degrees
+    (largest at low elevation), and time chunks of a +-20 degree scan differ by up to ~0.6".
+
+    Offsets (see `offsets`, `broadcast`) are a zenithal equidistant projection with +y towards increasing latitude
+    and +x towards decreasing longitude (x ~ -dphi * cos(theta)), so the az/el and ra/dec offset frames are mirror
+    images of each other.
     """
 
     def __init__(
@@ -91,6 +111,10 @@ class Coordinates:
         # dicts for caching metadata
         self.centers = {}
 
+        # an optional reference track (t, phi, theta) in this frame, around which the frame transforms are fitted
+        # (e.g. the boresight). Without one, the transforms are fitted around the center of these coordinates.
+        self._fit_reference = None
+
     def initialize(self):
         """
         Do all the initial computations needed to convert to some other frame.
@@ -99,50 +123,41 @@ class Coordinates:
         ref_time = ttime.monotonic()
 
         self.shaped_t = np.atleast_1d(self.t)
-        keep_dims = (-1,) if hasattr(self.t, "__len__") else ()
-        t_ordered_center_phi_theta = np.c_[get_center_phi_theta(self._phi, self._theta, keep_dims=keep_dims)]
+        fit_t, fit_phi, fit_theta = self._fit_reference or self._center_track(self._phi, self._theta)
+        fit_center_phi_theta = np.c_[fit_phi, fit_theta]
 
-        # (nt) t samples on which to explicitly compute the transformation from astropy
-        t_samples_min_res_seconds = 600
-        t_samples_min = np.min(self.t) - 1e0
-        t_samples_max = np.max(self.t) + 1e0
-        n_t_samples = int(
-            np.maximum(
-                3,
-                (t_samples_max - t_samples_min) / t_samples_min_res_seconds,
-            ),
-        )
-
-        n_t_samples = np.minimum(n_t_samples, 10000)
-
-        if 3 <= self.t.size < n_t_samples:
-            self.fid_t = self.t
-        else:
-            self.fid_t = np.linspace(t_samples_min, t_samples_max, n_t_samples)
+        # (n_nodes) times at which the transform is computed with astropy: the points of an absolute time grid that
+        # _interpolate_transform needs, so that the transform at a given time does not depend on the time span
+        node_index = np.floor(self.shaped_t / _TRANSFORM_NODE_SPACING_SECONDS).astype(np.int64)
+        self.fid_node_index = np.unique(np.unique(node_index)[:, None] + np.arange(-1, 3)[None])
+        self.fid_t = self.fid_node_index * _TRANSFORM_NODE_SPACING_SECONDS
 
         sample_indices = interp1d(
-            self.shaped_t,
-            np.arange(len(self.shaped_t)),
+            fit_t,
+            np.arange(len(fit_t)),
             bounds_error=False,
             kind="nearest",
             fill_value="extrapolate",
         )(self.fid_t).astype(int)
 
-        # three fiducial offsets from the boresight to train a transformation matrix
+        # fiducial offsets around the center to train a transformation matrix: the center itself, and rings of
+        # radius 1, 10 and 30 degrees. The fit is linear, so the fiducials must stay local: a frame change
+        # (aberration, etc.) is not a rotation over the whole sphere.
         # shape: (n_fid, 2)
-        fid_offsets = np.radians([[-1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
         psi = np.linspace(0, 2 * np.pi, 12 + 1)[:-1]
         fid_offsets = np.concatenate(
-            [r * np.c_[np.cos(psi), np.sin(psi)] for r in [1, 10, 30]],
+            [np.zeros((1, 2))] + [np.radians(r) * np.c_[np.cos(psi), np.sin(psi)] for r in [1, 10, 30]],
             axis=0,
         )
 
         # for sample_index =
 
+        # the fit is done in float64 numpy, so that it is accurate and does not depend on the number of nodes
         fpt = unjitted_offsets_to_phi_theta(
-            fid_offsets[..., :2],
-            t_ordered_center_phi_theta[:, 0][sample_indices][..., None],
-            t_ordered_center_phi_theta[:, 1][sample_indices][..., None],
+            fid_offsets,
+            np.float64(fit_center_phi_theta[:, 0][sample_indices])[..., None],
+            np.float64(fit_center_phi_theta[:, 1][sample_indices])[..., None],
+            xp=np,
         )
 
         self.fid_phi, self.fid_theta = fpt[..., 0], fpt[..., 1]
@@ -170,7 +185,7 @@ class Coordinates:
         }
 
         self.transforms = {}
-        self.fid_points = {self.frame.name: phi_theta_to_xyz(self.fid_phi, self.fid_theta)}
+        self.fid_points = {self.frame.name: unjitted_phi_theta_to_xyz(self.fid_phi, self.fid_theta, xp=np)}
         self.A = self.fid_points[self.frame.name]
         self.AT = np.swapaxes(self.fid_points[self.frame.name], -2, -1)
 
@@ -203,21 +218,12 @@ class Coordinates:
             frame.astropy_theta,
         ).rad
 
-        self.fid_points[frame.name] = phi_theta_to_xyz(frame_fid_phi, frame_fid_theta)
+        self.fid_points[frame.name] = unjitted_phi_theta_to_xyz(frame_fid_phi, frame_fid_theta, xp=np)
 
-        # voodoo!
-        self.transforms[frame.name] = (
-            np.linalg.inv(self.AT @ self.A) @ self.AT @ phi_theta_to_xyz(frame_fid_phi, frame_fid_theta)
-        )
+        # voodoo! (least squares, per node)
+        self.transforms[frame.name] = np.linalg.inv(self.AT @ self.A) @ self.AT @ self.fid_points[frame.name]
 
-        transform_stack = interp1d(
-            self.fid_t,
-            self.transforms[frame.name],
-            kind="quadratic",
-            bounds_error=False,
-            fill_value="extrapolate",
-            axis=0,
-        )(self.t)
+        transform_stack = self._interpolate_transform(self.transforms[frame.name])
 
         frame_phi, frame_theta = xyz_to_phi_theta(
             (np.expand_dims(self.compute_points(), -2) @ transform_stack).squeeze(),
@@ -233,6 +239,27 @@ class Coordinates:
             f"Computed transform to frame '{frame.name}' for Coordinates with shape {self.shape} "
             f"in {humanize_time(duration)}.",
         )  # noqa
+
+    def _interpolate_transform(self, node_transforms):
+        """
+        Interpolate the transforms computed at the nodes to the sample times, with a local cubic (four-point
+        Lagrange) interpolation. The interpolated transform at some time only depends on the four nearest nodes.
+        """
+        u = np.atleast_1d(self.t) / _TRANSFORM_NODE_SPACING_SECONDS  # not shaped_t, which slices do not update
+        k = np.floor(u).astype(np.int64)
+        s = (u - k)[:, None, None]
+        i = np.searchsorted(self.fid_node_index, k - 1)
+
+        weights = [
+            -s * (s - 1) * (s - 2) / 6,
+            (s + 1) * (s - 1) * (s - 2) / 2,
+            -(s + 1) * s * (s - 2) / 2,
+            (s + 1) * s * (s - 1) / 6,
+        ]
+
+        transform_stack = sum(w * node_transforms[i + j] for j, w in enumerate(weights))
+
+        return transform_stack if hasattr(self.t, "__len__") else transform_stack[0]
 
     @property
     def shape(self):
@@ -262,6 +289,16 @@ class Coordinates:
 
     def __getitem__(self, key):
         clone = deepcopy(self)
+
+        # a subset fits its frame transforms around the center of the full coordinates, so that a subset (e.g. one
+        # band) gets the same transformed coordinates as the full set
+        if not self.initialized and self._fit_reference is None:
+            clone._fit_reference = self._center_track(self._phi, self._theta)
+
+        # cached metadata describe the parent, not the slice
+        clone.centers = {}
+        clone.__dict__.pop("summary", None)
+
         attrs = ["_x", "_y", "_z", "_r", "_phi", "_theta", "_t"]
         attrs.extend([frames[frame][c] for frame in self.computed_frames for c in ["phi", "theta"]])
         for attr in attrs:
@@ -301,7 +338,7 @@ class Coordinates:
             earth_location=self.earth_location,
             frame=self.frame.name,
             dtype=self.dtype,
-        )
+        )._with_fit_reference(self._fit_reference or self._center_track(self._phi, self._theta))
 
     def boresight(self):
         cphi, ctheta = get_center_phi_theta(self._phi, self.theta, keep_dims=(-1,))
@@ -319,7 +356,7 @@ class Coordinates:
     def summary(self):
         # compute summary for the string repr
         summary = pd.DataFrame(columns=["min", "mean", "max"])
-        boresight = self.boresight
+        boresight = self.boresight()
         for attr in ["az", "el", "ra", "dec"]:
             for stat in ["min", "mean", "max"]:
                 summary.loc[attr, stat] = f"{float(np.degrees(getattr(getattr(boresight, attr), stat)())):.03f}°"
@@ -351,6 +388,18 @@ class Coordinates:
     def compute_points(self):
         return phi_theta_to_xyz(self._phi, self._theta)
 
+    def _with_fit_reference(self, reference):
+        """Fit the transforms around `reference` (e.g. that of the coordinates this was derived from)."""
+        self._fit_reference = reference
+        return self
+
+    def _center_track(self, phi, theta):
+        """
+        The center of (phi, theta) at each time, as a reference track (t, phi, theta) for the frame transforms.
+        """
+        keep_dims = (-1,) if hasattr(self.t, "__len__") else ()
+        return (np.atleast_1d(self.t), *get_center_phi_theta(phi, theta, keep_dims=keep_dims))
+
     def center(self, frame: str = None):
         frame = Frame(frame or self.frame)
         if frame.name not in self.centers:
@@ -377,13 +426,16 @@ class Coordinates:
 
     def broadcast(self, offsets, frame="az/el"):
         phi_theta = unjitted_offsets_to_phi_theta(offsets[..., None, :], self.az, self.el)
-        return Coordinates(
+        coords = Coordinates(
             t=self.t,
             phi=phi_theta[..., 0],
             theta=phi_theta[..., 1],
             earth_location=self.earth_location,
             frame="az/el",
         )
+        # fit the frame transforms around the boresight, so that they do not depend on which offsets are present
+        coords._fit_reference = self._center_track(self.az, self.el)
+        return coords
 
     def offsets(self, frame, center=None, compute: bool = False):
         offsets_s = ttime.monotonic()

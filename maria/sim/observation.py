@@ -73,13 +73,48 @@ class Observation:
         max_abs_az_vel_deg = np.max(
             np.abs(np.gradient(np.degrees(np.unwrap(self.boresight.az))) / np.gradient(self.boresight.t))
         )
-        max_abs_el_vel_deg = np.max(np.abs(np.gradient(np.degrees(self.boresight.el)) / np.gradient(self.boresight.t)))
+        # NaN pointing is ignored, so that it does not disable the elevation check
+        max_abs_el_vel_deg = np.nanmax(np.abs(np.gradient(np.degrees(self.boresight.el)) / np.gradient(self.boresight.t)))
 
         if max_abs_az_vel_deg > self.instrument.az_vel_limit:
             logger.warning(
                 (
                     f"The maximum velocity of the boresight ({max_abs_az_vel_deg:.01f} deg/s) exceeds "
                     f"the maximum velocity of the instrument ({self.instrument.az_vel_limit:.01f} deg/s)."
+                ),
+            )
+
+        # the instrument has a single speed limit, which applies to the elevation too
+        if max_abs_el_vel_deg > self.instrument.az_vel_limit:
+            logger.warning(
+                (
+                    f"The maximum elevation velocity of the boresight ({max_abs_el_vel_deg:.01f} deg/s) exceeds "
+                    f"the maximum velocity of the instrument ({self.instrument.az_vel_limit:.01f} deg/s)."
+                ),
+            )
+
+        # the acceleration is the 3-point second difference over steps of at least ~10 ms: at higher sample rates
+        # it is dominated by the rounding noise of the float32 pointing (~20 deg/s^2 at 1 kHz). A gradient of the
+        # gradient would smooth over twice the step, and underestimate sharp turnarounds.
+        step = max(1, round(0.01 / np.median(np.diff(self.boresight.t))))
+        t_acc = np.asarray(self.boresight.t[::step], dtype=float)
+        max_abs_acc_deg = 0.0
+        for x in [np.degrees(np.unwrap(self.boresight.az[::step])), np.degrees(self.boresight.el[::step])]:
+            if t_acc.size > 2:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    vel = np.diff(x) / np.diff(t_acc)
+                    acc = 2 * np.diff(vel) / (t_acc[2:] - t_acc[:-2])
+                # a repeated timestamp or NaN pointing gives a non-finite acceleration, which is ignored so that it
+                # does not disable the check (max(0, nan) is 0)
+                acc = acc[np.isfinite(acc)]
+                if acc.size:
+                    max_abs_acc_deg = max(max_abs_acc_deg, np.abs(acc).max())
+
+        if max_abs_acc_deg > self.instrument.acc_limit:
+            logger.warning(
+                (
+                    f"The maximum acceleration of the boresight ({max_abs_acc_deg:.01f} deg/s^2) exceeds "
+                    f"the maximum acceleration of the instrument ({self.instrument.acc_limit:.01f} deg/s^2)."
                 ),
             )
 
