@@ -18,7 +18,7 @@ from ..map import Map, load
 from ..plan import Plan, PlanList, get_plan
 from ..site import Site, get_site
 from ..tod import TOD
-from .atmosphere import DEFAULT_ATMOSPHERE_SIM_KWARGS, AtmosphereMixin  # noqa
+from .atmosphere import _VALID_ATMOSPHERE_SIM_KWARGS, DEFAULT_ATMOSPHERE_SIM_KWARGS, AtmosphereMixin  # noqa
 from .base import BaseSimulation
 from .cmb import DEFAULT_CMB_SIM_KWARGS, CMBMixin  # noqa
 from .map import DEFAULT_MAP_SIM_KWARGS, MapMixin  # noqa
@@ -93,6 +93,14 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
         self.atmosphere = atmosphere
         self.atmosphere_kwargs = DEFAULT_ATMOSPHERE_SIM_KWARGS.copy()
         self.atmosphere_kwargs.update(atmosphere_kwargs)
+        invalid_kwargs = [key for key in self.atmosphere_kwargs if key not in _VALID_ATMOSPHERE_SIM_KWARGS]
+        if self.atmosphere and "pwv_rms_frac" in invalid_kwargs:
+            raise ValueError(
+                "Invalid atmosphere_kwargs ['pwv_rms_frac']; set it in the layers, as "
+                "atmosphere_kwargs={'layers': {'pwv_rms_frac': ...}}."
+            )
+        if self.atmosphere and invalid_kwargs:
+            raise ValueError(f"Invalid atmosphere_kwargs {invalid_kwargs}; valid ones are {_VALID_ATMOSPHERE_SIM_KWARGS}.")
 
         self.map_kwargs = map_kwargs
 
@@ -162,6 +170,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
                 site=self.site,
                 atmosphere=self.atmosphere,
                 atmosphere_kwargs=self.atmosphere_kwargs,
+                disable_progress_bars=self.disable_progress_bars,
             )
 
             if hasattr(obs, "atmosphere"):
@@ -275,6 +284,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             metadata["atmosphere"] = True
             metadata["pwv"] = float(np.round(obs.atmosphere.weather.pwv.mm, 3))
             metadata["effective_temperature"] = float(np.round(obs.atmosphere.weather.effective_temperature.K, 3))
+            metadata["pressure_level"] = float(obs.atmosphere.spectrum.pressure_level.hPa)
         else:
             metadata["atmosphere"] = False
 

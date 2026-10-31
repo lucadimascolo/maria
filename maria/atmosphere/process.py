@@ -192,10 +192,14 @@ class AutoregressiveProcess:
         if not hasattr(self, "A"):
             self.compute_covariance_matrices()
 
+        # start from zeros, and run for at least 5 outer scales so that the AR recursion (whose weights sum to almost
+        # one) forgets the initial state also on large scales
         n_steps = 2 * self.n_extrusion
-        BUFFER = np.random.standard_normal(
-            (self.n_extrusion + n_steps, self.n_cross_section),
-        )
+        r0 = self.callback_kwargs.get("r0")
+        if r0 is not None:
+            extrusion_res = np.abs(np.gradient(self.extrusion).mean())
+            n_steps = max(n_steps, int(np.ceil(5 * r0 / extrusion_res)))
+        BUFFER = np.zeros((self.n_extrusion + n_steps, self.n_cross_section))
 
         iterator = np.arange(n_steps)[::-1]
 

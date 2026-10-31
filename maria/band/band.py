@@ -249,11 +249,11 @@ class Band:
             return np.array(jsp.interpolate.RegularGridInterpolator(points=spectrum.points[:3], values=integral_grid)(xi))
 
     def transmission(self, region="chajnantor", pwv=1, elevation=np.radians(90)) -> float:
-        if not hasattr(self, "spectrum"):
-            self.spectrum = AtmosphericSpectrum(region=region)
-        elif self.spectrum.region != region:
-            self.spectrum = AtmosphericSpectrum(region=region)
-        return self.spectrum.transmission(nu=self.center, pwv=pwv, elevation=elevation)
+        # use the band's own spectrum if it fits, without replacing it (it is also used for the NET conversions)
+        spectrum = self.spectrum
+        if spectrum is None or spectrum.region != region:
+            spectrum = AtmosphericSpectrum(region=region)
+        return float(spectrum.transmission(nu=self.center.Hz, pwv=pwv, elevation=elevation))
 
     def atmosphere_power(
         self,

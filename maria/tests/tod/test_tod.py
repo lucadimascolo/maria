@@ -103,3 +103,20 @@ def test_tod_preprocessing_errors():
         assert False
     except TypeError:
         pass
+
+
+def test_tod_downsample_puts_the_coordinates_at_the_block_centres():
+    """The downsampled data are block means, so the pointing must be that of the block centres (master put it at the
+    start of each block: a lag of (factor - 1) / 2 samples, 162 arcsec for 1 deg/s at 100 Hz and factor 10)."""
+    time = 1.75e9 + np.arange(6000) / 100
+
+    def track(t):  # 1 deg/s in azimuth, for 3 detectors
+        return np.radians(30 + (t[None] - time[0]) + np.arange(3)[:, None])
+
+    coords = Coordinates(phi=track(time), theta=np.radians(np.full((3, time.size), 50.0)), t=time, frame="az/el")
+    tod = TOD(data={"noise": np.zeros((3, time.size))}, coords=coords)
+    ds = tod.downsample(factor=10)
+
+    assert ds.shape == (3, 600)
+    assert np.allclose(ds.coords.t, time.reshape(600, 10).mean(axis=-1), rtol=0, atol=1e-6)
+    assert np.degrees(np.abs(ds.coords.az - track(ds.coords.t))).max() * 3600 < 1e-3

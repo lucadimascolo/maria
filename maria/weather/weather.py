@@ -58,6 +58,9 @@ def read_weather_quantile_data(path: str, fields: list[str] = None):
     return qdata
 
 
+_VALID_WEATHER_OVERRIDES = ["pwv"]
+
+
 class Weather:
     def __init__(
         self,
@@ -78,6 +81,10 @@ class Weather:
         self.region = region
         self.quantiles = quantiles
         self.override = override
+
+        invalid_overrides = [key for key in override if key not in _VALID_WEATHER_OVERRIDES]
+        if invalid_overrides:
+            raise ValueError(f"Invalid weather overrides {invalid_overrides}; valid ones are {_VALID_WEATHER_OVERRIDES}.")
         self.source = source
 
         time = time if time is not None else arrow.now().to("utc")
@@ -95,6 +102,12 @@ class Weather:
         self.utc_day_hour = get_utc_day_hour(self.time.timestamp())
 
         self.qdata = read_weather_quantile_data(self.cache_path)
+
+        invalid_quantiles = [key for key in quantiles if key not in self.qdata["levels"]]
+        if invalid_quantiles:
+            raise ValueError(
+                f"Invalid weather quantiles {invalid_quantiles}; valid ones are {list(self.qdata['levels'].keys())}."
+            )
 
         self.default_units = {
             **self.qdata["metadata"]["units"],
@@ -253,7 +266,10 @@ class Weather:
 
     @property
     def wind_bearing(self):
-        return np.arctan2(-self.wind_east.to("m/s"), self.wind_north.to("m/s")) % (2 * np.pi)
+        """
+        The meteorological wind direction in radians: the bearing (clockwise from north) the wind blows *from*.
+        """
+        return np.arctan2(-self.wind_east.to("m/s"), -self.wind_north.to("m/s")) % (2 * np.pi)
 
     @property
     def air_density(self):
@@ -360,7 +376,7 @@ column dry_air vmr"""
         if fields is None:
             fields = ["z", "pressure", *list(self.data["levels"].keys()), "absolute_humidity", "air_density", "dew_point"]
 
-        if pressure_level:
+        if pressure_level is not None:
             altitude = sp.interpolate.interp1d(self.pressure.Pa, self.z.m, bounds_error=False, fill_value="extrapolate")(
                 Quantity(pressure_level, "hPa").Pa
             )
