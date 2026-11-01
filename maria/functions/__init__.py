@@ -24,7 +24,7 @@ def matern_three_halves(r):
 
 
 def matern_five_halves(r):
-    return (1 + np.sqrt(3) * r + (5.0 / 3.0) * r**2) * np.exp(-np.sqrt(5) * r)
+    return (1 + np.sqrt(5) * r + (5.0 / 3.0) * r**2) * np.exp(-np.sqrt(5) * r)
 
 
 def normalized_matern(r, nu):

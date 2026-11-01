@@ -133,13 +133,21 @@ class Band:
             else:
                 raise FrequencyOutOfBoundsError(nu=bad_freqs)
 
-        # this turns e.g. 56MHz to "f056" and 150GHz to "f150"
-        self.name = name or f"f{10 ** (np.log10(self.center.Hz) % 3):>03.0f}"
+        # this turns e.g. 150GHz to "f150", 1.5THz to "f1500" and (as on master) 56MHz to "f056"
+        if name is None:
+            nu_GHz = self.center.Hz / 1e9
+            name = f"f{nu_GHz:>03.0f}" if nu_GHz >= 1 else f"f{10 ** (np.log10(self.center.Hz) % 3):>03.0f}"
+        self.name = name
         self.shape = shape
         self.efficiency = efficiency
         self.NEP_per_loading = Quantity(NEP_per_loading, "W√s")
         self.knee = knee
         self.time_constant = time_constant
+        if time_constant:
+            logger.warning(
+                f"Band {self.name} has a time constant of {time_constant} s, but detector time constants are not "
+                "implemented: it is ignored by the simulation."
+            )
         self.gain_error = gain_error
 
         self.spectrum_kwargs = {}
@@ -167,7 +175,9 @@ class Band:
 
     @property
     def center(self):
-        return Quantity(np.round(np.sum(self.nu.Hz * self.tau) / np.sum(self.tau), 2), "Hz")
+        # trapezoid weights, so that the centre is right for a non-uniform frequency grid
+        nu = self.nu.Hz
+        return Quantity(np.round(np.trapezoid(nu * self.tau, x=nu) / np.trapezoid(self.tau, x=nu), 2), "Hz")
 
     @property
     def width(self):
@@ -206,13 +216,35 @@ class Band:
         ax.set_ylabel(r"$\tau(\nu)$ [Rayleigh-Jeans]")
         ax.legend()
 
+    # An NEP is the same for every detector, while an NET is each detector's white noise level (referred to Stokes I):
+    # a polarized detector sees half the power of an unpolarized source, so it needs half the NEP for the same NET.
+    # Both NEPs are computed when the sensitivity is set. The NEP, NET_RJ and NET_CMB properties are for unpolarized
+    # detectors.
+
+    def _detector_NEP(self, polarized: bool = False) -> Quantity:
+        return self._polarized_NEP if polarized else self._NEP
+
+    def _set_NET(self, units: str, value):
+        self._NEP, self._polarized_NEP = (
+            Quantity(self.cal(f"{units} -> W", polarized=p, spectrum=self.spectrum, **self.spectrum_kwargs)(value), "W√s")
+            for p in (False, True)
+        )
+
+    @property
+    def NEP(self):
+        return self._NEP
+
+    @NEP.setter
+    def NEP(self, value):
+        self._NEP = self._polarized_NEP = Quantity(value, "W√s")
+
     @property
     def NET_RJ(self):
         return Quantity(self.cal("W -> K_RJ", spectrum=self.spectrum, **self.spectrum_kwargs)(self.NEP.to("W√s")), "K_RJ√s")
 
     @NET_RJ.setter
     def NET_RJ(self, value):
-        self.NEP = Quantity(self.cal("K_RJ -> W", spectrum=self.spectrum, **self.spectrum_kwargs)(value), "W√s")
+        self._set_NET("K_RJ", value)
 
     @property
     def NET_CMB(self):
@@ -222,7 +254,7 @@ class Band:
 
     @NET_CMB.setter
     def NET_CMB(self, value):
-        self.NEP = Quantity(self.cal("K_CMB -> W", spectrum=self.spectrum, **self.spectrum_kwargs)(value), "W√s")
+        self._set_NET("K_CMB", value)
 
     def compute_transmission_integral(
         self,

@@ -16,7 +16,7 @@ def parse_calibration_signature(s: str):
                     res = {}
                     for io, u in zip(["in", "out"], items):
                         res[io] = parse_units(u)
-        return res
+                    return res
     raise ValueError("Calibration must have signature 'units1 -> units2'.")
 
 

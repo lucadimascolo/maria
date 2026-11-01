@@ -116,6 +116,7 @@ def generate_2d_pattern(
                 shape=shape,
                 rotation=rotation,
                 packing=packing,
+                center=center,
             )
 
             current_max_diameter = compute_diameter(offsets)
@@ -166,10 +167,10 @@ def generate_2d_pattern(
 
         X = (get_rotation_matrix_2d(rotation) @ np.stack([df.x.values, df.y.values])).T
 
-        if max_diameter:
-            return max_diameter * X / compute_diameter(X)
-
         if center:
             X -= X.mean(axis=0, keepdims=True)
+
+        if max_diameter:
+            return max_diameter * X / compute_diameter(X)
 
         return spacing * X

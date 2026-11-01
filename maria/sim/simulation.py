@@ -194,6 +194,7 @@ class Simulation(AtmosphereMixin, CMBMixin, MapMixin, NoiseMixin):
             noise_start_s = ttime.monotonic()
             self.noise_kwargs = DEFAULT_NOISE_SIM_KWARGS.copy()
             self.noise_kwargs.update(noise_kwargs)
+            self._init_noise()
             logger.debug(f"Initialized noise simulation in {humanize_time(ttime.monotonic() - noise_start_s)}.")
 
         #     # self.start = arrow.get(self.boresight.t.min()).to("utc")
