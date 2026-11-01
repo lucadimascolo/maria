@@ -31,6 +31,7 @@ VALID_SCAN_KWARGS = [
 
 
 def parse_scan_kwargs(scan_kwargs, default_radius: float = 1.0):
+    scan_kwargs = dict(scan_kwargs)
     for kwarg in scan_kwargs:
         if kwarg not in VALID_SCAN_KWARGS:
             raise ValueError(f"Invalid scan kwarg '{kwarg}'")
@@ -85,8 +86,11 @@ def lissajous(
 
     freq = speed / np.sqrt((x_throw * freq_ratio) ** 2 + y_throw**2)
 
-    x = x_throw * np.cos(freq_ratio * freq * t)
-    y = y_throw * np.sin(freq * t)
+    # the phase starts at the beginning of the scan, so that the scan does not depend on the absolute start time
+    p = freq * (t - t[:1])
+
+    x = x_throw * np.cos(freq_ratio * p)
+    y = y_throw * np.sin(p)
 
     return np.stack([x, y], axis=-1)
 
@@ -103,7 +107,8 @@ def double_circle(t, x_throw, y_throw, speed, ratio=0.5, freq_ratio=1.7, **extra
     a = radius / (1 + 1 / ratio)
     b = a / ratio
 
-    phase = t * speed / np.maximum(a + b * freq_ratio, 1e-16)  # do not divide by zero!
+    # the phase starts at the beginning of the scan, so that the scan does not depend on the absolute start time
+    phase = (t - t[:1]) * speed / np.maximum(a + b * freq_ratio, 1e-16)  # do not divide by zero!
 
     x = a * np.sin(phase) + b * np.sin(phase * freq_ratio)
     y = a * np.cos(phase) + b * np.cos(phase * freq_ratio)
@@ -177,8 +182,12 @@ def back_and_forth(t, x_throw=1, y_throw=0, speed=1.0, max_accel=np.inf, d=0.01)
     b = np.sqrt(np.pi * max_accel * np.sqrt(2 * d - d**2) / (2 * throw * (1 - d)))
     dp_dt = np.minimum(a, b)
 
-    x = factor * x_throw * smooth_sawtooth(dp_dt * t, delta=d)
-    y = factor * y_throw * smooth_sawtooth(dp_dt * t, delta=d)
+    # the phase starts at the beginning of the scan, so that the scan does not depend on the absolute start time
+    p = dp_dt * (t - t[:1])
+
+    # smooth_sawtooth is already normalized to +/- 1
+    x = x_throw * smooth_sawtooth(p, delta=d)
+    y = y_throw * smooth_sawtooth(p, delta=d)
 
     return np.stack([x, y], axis=-1)
 
