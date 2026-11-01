@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import warnings
 
 import numpy as np
 from astropy.io import fits
 from astropy.io.fits.header import Header
+from astropy.wcs import WCS, FITSFixedWarning
 
 from ...units import Quantity, parse_units
 
@@ -67,6 +69,11 @@ def read_fits_map(path: str, index: int | None = None, strict: bool = True):
         data = hdu.data  # [..., ::-1, :]
         header = hdu.header
 
+        # maria writes the map weight in an extension named WEIGHT
+        weight = None
+        if "WEIGHT" in hdul and hdul["WEIGHT"].data is not None and hdul["WEIGHT"].data.shape == data.shape:
+            weight = hdul["WEIGHT"].data
+
     try:
         kwargs, axis_mask = parse_fits_map_header(header)
     except Exception as e:
@@ -76,7 +83,32 @@ def read_fits_map(path: str, index: int | None = None, strict: bool = True):
         kwargs = {}
         axis_mask = np.ones(data.ndim, dtype=bool)
 
+    if weight is not None:
+        kwargs["weight"] = weight
+
     return data, axis_mask, kwargs, header
+
+
+def _compute_fits_map_center(header, xi_axis: int, eta_axis: int, default):
+    """
+    The sky position of the centre of the image (0-based pixel ((NAXIS - 1) / 2) on each spatial axis).
+    This is used for projections other than maria's own (ARC), where CRVAL can be far from the map.
+    """
+    pixel_center = [(header[f"NAXIS{axis}"] - 1) / 2 for axis in (xi_axis, eta_axis)]
+    reference_pixel = [header.get(f"CRPIX{axis}", 1.0) - 1 for axis in (xi_axis, eta_axis)]
+
+    if np.allclose(pixel_center, reference_pixel):
+        return default
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FITSFixedWarning)
+            phi, theta = WCS(header, naxis=[xi_axis, eta_axis]).wcs_pix2world([pixel_center], 0)[0]
+    except Exception as e:
+        logger.warning(f"Could not compute the map center from the WCS ({e}), using CRVAL.")
+        return default
+
+    return [float(phi), float(theta)]
 
 
 def parse_fits_map_header(header):
@@ -88,6 +120,8 @@ def parse_fits_map_header(header):
     axis_mask = np.zeros(header["NAXIS"], dtype=bool)
 
     center = [0, 0]
+    spatial_axes = {}
+    spatial_offsets = {}
     for axis in range(header["NAXIS"]):
         parity = 1
 
@@ -126,7 +160,7 @@ def parse_fits_map_header(header):
 
         CDELT = header.get(f"CDELT{AXIS}")
         CRVAL = header.get(f"CRVAL{AXIS}")
-        CRPIX = header.get(f"CRPIX{AXIS}")
+        CRPIX = header.get(f"CRPIX{AXIS}", 1.0)
         CUNIT = header.get(f"CUNIT{AXIS}", default_units)
 
         logger.debug(f"Found CTYPE{AXIS}: {repr(CTYPE)}")
@@ -141,19 +175,44 @@ def parse_fits_map_header(header):
 
         if dim in ["xi", "eta"]:
             kwargs[f"{dim}_res"] = CDELT
+            # the offsets from CRVAL, which is at the (1-based) reference pixel CRPIX
+            spatial_offsets[dim] = CDELT * (np.arange(NAXIS, dtype=float) - (CRPIX - 1))
             center[["xi", "eta"].index(dim)] = CRVAL
+            spatial_axes[dim] = AXIS
         else:
-            axis_values = CDELT * np.arange(NAXIS, dtype=float)
-            axis_values += CRVAL - np.interp(CRPIX, np.arange(NAXIS), axis_values)
+            # maria used to write CRPIX = 0 with CRVAL at the first pixel, and 0-based Stokes indices
+            legacy = CRPIX == 0
+            # CRPIX is 1-based
+            axis_values = CRVAL + CDELT * (np.arange(NAXIS, dtype=float) - (0 if legacy else CRPIX - 1))
+            if dim == "stokes":
+                # FITS Stokes codes (I = 1, Q = 2, U = 3, V = 4) to maria's 0-based indices into "IQUV"
+                axis_values = np.round(axis_values).astype(int) - (0 if legacy else 1)
             axes[dim] = Quantity(axis_values, CUNIT)
 
+    # CRVAL is the sky position of the reference pixel CRPIX, which need not be the middle of the image
+    if len(spatial_axes) == 2:
+        projections = {str(header[f"CTYPE{AXIS}"])[5:8] for AXIS in spatial_axes.values()}
+        if projections == {"ARC"}:
+            # maria's projection (ARC) about CRVAL, with the offsets counted from CRPIX, is exact wherever CRPIX is
+            for dim in ["xi", "eta"]:
+                kwargs[dim] = spatial_offsets[dim]
+                kwargs.pop(f"{dim}_res")
+        else:
+            # other projections (TAN, SIN, CAR, ...) differ from ARC away from CRVAL, which can be far from the map:
+            # center the map on the sky position of its middle pixel
+            center = _compute_fits_map_center(header, spatial_axes["xi"], spatial_axes["eta"], default=center)
+
+    # a keyword (like RESTFRQ, the rest frequency of a line) does not override an axis of the data, even a
+    # single-channel one: a FREQ axis of size 1 gives the frequency of the map, and RESTFRQ is then ignored
+    data_axes = set(axes)
     for key, value in header.items():
         for kwarg, aliases in FITS_KWARG_ALIASES.items():
             for alias in aliases:
                 if key == alias:
                     logger.debug(f"Using {alias}: {value} for kwarg '{kwarg}'")
                     if kwarg in ["nu", "z"]:
-                        axes[kwarg] = Quantity([value], FITS_DEFAULT_UNITS[kwarg])
+                        if kwarg not in data_axes:
+                            axes[kwarg] = Quantity([value], FITS_DEFAULT_UNITS[kwarg])
                     else:
                         kwargs[kwarg] = value
                     break

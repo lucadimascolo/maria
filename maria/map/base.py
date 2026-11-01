@@ -204,7 +204,8 @@ class Map:
         for dim in self.dims:
             dim_parity = 1
             dim_values = getattr(self, dim)
-            if (dim_values.size > 1) and dim not in ["stokes"]:
+            # stokes and HEALPix pixel indices have no physical ordering
+            if (dim_values.size > 1) and isinstance(dim_values, Quantity):
                 grad = np.gradient(dim_values.base_units_value)
                 if all(grad < 0):
                     dim_parity *= -1
@@ -358,9 +359,23 @@ class Map:
         """
         Returns the beam area in steradians
         """
-        area = (np.pi / 4) * self.beam[..., 0].radians * self.beam[..., 1].radians
+        # beam (major, minor) are FWHMs, so the Gaussian solid angle is 2 pi sigma_major sigma_minor
+        area = (np.pi / (4 * np.log(2))) * self.beam[..., 0].radians * self.beam[..., 1].radians
         area = np.expand_dims(area, axis=(-1, -2)[: len(self.map_dims)])
         return Quantity(area, "sr")
+
+    def _smoothed_beam(self, sigma: Quantity):
+        """
+        The beam (in degrees) after convolution with a circular Gaussian of width `sigma`, and the factor that keeps
+        the convolved data in units per beam (the ratio of the beam areas).
+        """
+        beam = self.beam.deg.copy()
+        beam[..., :2] = np.hypot(beam[..., :2], (np.sqrt(8 * np.log(2)) * sigma).deg)
+
+        if self.u["physical_quantity"] != "spectral_flux_density_per_beam":
+            return beam, 1
+        beam_area_ratio = beam[..., :2].prod(axis=-1) / self.beam.deg[..., :2].prod(axis=-1)
+        return beam, np.expand_dims(beam_area_ratio, axis=(-1, -2)[: len(self.map_dims)])
 
     def beam_repr(self):
         slice_axes = tuple(range(self.beam.ndim - 1))
@@ -370,25 +385,27 @@ class Map:
         return (b[0], b[1], b[2])
 
     def to_obs_frame(self):
+        """
+        Fold a single redshift (or radial velocity) into the frequency axis: the map loses its z (or v) dimension
+        and its rest-frame frequencies become the observed ones, nu / (1 + z).
+        """
 
-        package = self.package()
-
-        if "nu" not in package:
+        if "nu" not in self.dims:
             return self
 
-        for dim_index, (dim, n) in enumerate(self.dims.items()):
-            if (dim in ["nu", "v", "z"]) and (n == 1):
-                package["data"] = np.squeeze(package["data"], axis=dim_index)
+        z, m = 0.0, self
+        if "z" in self.dims:
+            if self.dims["z"] > 1:
+                raise NotImplementedError("Cannot move a map with more than one redshift to the observer frame.")
+            z, m = float(np.squeeze(self.z)), self.squeeze("z")
+        elif "v" in self.dims:
+            if self.dims["v"] > 1:
+                raise NotImplementedError("Cannot move a map with more than one velocity to the observer frame.")
+            beta = float(np.squeeze(self.v.to("m/s"))) / c
+            z, m = np.sqrt((1 + beta) / (1 - beta)) - 1, self.squeeze("v")
 
-            if dim == "z":
-                z = package.pop("z")
-            elif dim == "v":
-                v = package.pop("v")
-                numer = np.sqrt(1 + v / Quantity(c, "m/s"))
-                denom = np.sqrt(1 - v / Quantity(c, "m/s"))
-                z = numer / denom - 1
-
-        package["nu"] = package.pop("nu") * (1 + z)
+        package = m.package()
+        package["nu"] = m.nu.Hz / (1 + z)
 
         return type(self)(**package)
 
@@ -450,10 +467,14 @@ class Map:
         package["units"] = units
         return type(self)(**package)
 
-    def _stokes_weighted_pointing_matrix_ingredients(self, coords: Coordinates, dets: Array, bilinear: bool = False):
+    def _stokes_weighted_pointing_matrix_ingredients(
+        self, coords: Coordinates, dets: Array, bilinear: bool = False, zero_outside: bool = False
+    ):
 
         M = dets.mueller()
-        samples, pixels, weights, n_pixels, n_samples = self._pointing_matrix_ingredients(coords=coords, bilinear=bilinear)
+        samples, pixels, weights, n_pixels, n_samples = self._pointing_matrix_ingredients(
+            coords=coords, bilinear=bilinear, zero_outside=zero_outside
+        )
 
         # this is really only used in backwards projection during mapping
         if "nu" in self.dims:
@@ -478,12 +499,24 @@ class Map:
         )
 
     def stokes_weighted_pointing_matrix(self, coords: Coordinates, dets: Array, bilinear: bool = False):
+        return self._stokes_weighted_pointing_matrix(coords=coords, dets=dets, bilinear=bilinear)
+
+    def _stokes_weighted_pointing_matrix(
+        self, coords: Coordinates, dets: Array, bilinear: bool = False, zero_outside: bool = False
+    ):
+        """
+        zero_outside: samples beyond the edges of a ProjectionMap get no signal (as in the simulation), instead of
+        the value of the nearest edge pixel (as in the mappers).
+        """
 
         weights, samples, pixels, n_samples, n_pixels = self._stokes_weighted_pointing_matrix_ingredients(
-            coords=coords, dets=dets, bilinear=bilinear
+            coords=coords, dets=dets, bilinear=bilinear, zero_outside=zero_outside
         )
 
-        return sp.sparse.csr_array((weights, (samples, pixels)), shape=(n_samples, n_pixels))
+        P = sp.sparse.csr_array((weights, (samples, pixels)), shape=(n_samples, n_pixels))
+        if zero_outside:
+            P.eliminate_zeros()  # so that samples outside the map do not pick up NaN pixels
+        return P
 
     def sample_nu(self, nu):
         map_nu_interpolator = sp.interpolate.interp1d(self.nu.Hz, self.data, axis=1, kind="linear")
@@ -539,11 +572,15 @@ class Map:
                 package[dim] = package[dim][explicit_slices[axis]]
 
         if "xi" in self.dims:
-            xi_res_factor = explicit_slices[-1].step or 1.0
-            eta_res_factor = explicit_slices[-2].step or 1.0
+            xi_res_factor = abs(explicit_slices[-1].step or 1.0)
+            eta_res_factor = abs(explicit_slices[-2].step or 1.0)
 
-            # downsampling changes the pixel area, so we might have to adjust
-            package["data"] *= (xi_res_factor * eta_res_factor) ** parse_units(self.units)["dimension_vector"].pixel
+            # downsampling changes the pixel area, so we might have to adjust (e.g. Jy/pixel scales with the area)
+            pixel_area_factor = (xi_res_factor * eta_res_factor) ** -parse_units(self.units)["dimension_vector"].pixel
+            package["data"] *= pixel_area_factor
+            if self._weight is not None:
+                # an inverse-variance weight goes as the inverse square of the data
+                package["weight"] = package["weight"] * pixel_area_factor**-2
 
         # if "pixel" in self.dims:
 
