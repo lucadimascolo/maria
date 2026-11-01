@@ -38,7 +38,9 @@ class AtmosphericSpectrum:
         if pressure_level is not None:
             self.pressure_level = Quantity(pressure_level, "hPa").pin("hPa")
         else:
-            self.pressure_level = Weather(region).pressure_level
+            # the climatological (season- and hour-averaged) pressure level at the region's default altitude,
+            # so that the default spectrum does not depend on the date the code is run
+            self.pressure_level = Weather(region, seasonal=False, diurnal=False).pressure_level
 
         # if (self.altitude < min_altitude) or (self.altitude > max_altitude):
         #     logger.warning(

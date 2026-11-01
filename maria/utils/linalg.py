@@ -98,6 +98,8 @@ def fast_psd_inverse(M):
     """
 
     cholesky, dpotrf_info = sp.linalg.lapack.dpotrf(M)
+    if dpotrf_info != 0:
+        raise np.linalg.LinAlgError(f"Cholesky decomposition failed (dpotrf info = {dpotrf_info}); is the matrix PD?")
     invM, dpotri_info = sp.linalg.lapack.dpotri(cholesky)
     return np.where(invM, invM, invM.T)
 
